@@ -5,25 +5,25 @@ os.environ['KMP_DUPLICATE_LIB_OK']='True'
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from dataset import DeepGlobeRoadDataset, val_transform # Fixed Class Name
-from models import get_road_model
+from dataset import DeepGlobeBuildingDataset, val_transform
+from models import get_building_model
 
-def run_visual_check(model_path, image_idx=10, save_result=True):
+def run_building_check(model_path, image_idx=10, save_result=True):
     # 1. Setup Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🔍 Running visualization on: {device}")
+    print(f"🏠 Visualizing Buildings on: {device}")
 
     # 2. Load the Trained Model
     if not os.path.exists(model_path):
-        print(f"❌ Error: Model weights not found at {model_path}")
+        print(f"❌ Error: Building weights not found at {model_path}")
         return
 
-    model = get_road_model().to(device)
+    model = get_building_model().to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
     # 3. Load Dataset
-    dataset = DeepGlobeRoadDataset(
+    dataset = DeepGlobeBuildingDataset(
         image_dir='datasets/train', 
         mask_dir='datasets/train', 
         transform=val_transform 
@@ -54,36 +54,37 @@ def run_visual_check(model_path, image_idx=10, save_result=True):
     ax[0].axis('off')
     
     ax[1].imshow(mask, cmap='gray')
-    ax[1].set_title("Ground Truth (Roads)", fontsize=14, fontweight='bold')
+    ax[1].set_title("Ground Truth (Buildings)", fontsize=14, fontweight='bold')
     ax[1].axis('off')
     
-    im = ax[2].imshow(prediction_prob, cmap='magma') 
-    ax[2].set_title("Confidence Heatmap", fontsize=14, fontweight='bold')
+    # Using 'inferno' for buildings gives a high-contrast look
+    im = ax[2].imshow(prediction_prob, cmap='inferno') 
+    ax[2].set_title("Footprint Confidence", fontsize=14, fontweight='bold')
     plt.colorbar(im, ax=ax[2], fraction=0.046, pad=0.04)
     ax[2].axis('off')
     
     ax[3].imshow(binary_pred, cmap='gray')
-    ax[3].set_title("Final Prediction", fontsize=14, fontweight='bold')
+    ax[3].set_title("Final Detection", fontsize=14, fontweight='bold')
     ax[3].axis('off')
     
     plt.tight_layout()
     
-    # 7. Professional Save Logic
+    # 7. Save to the results folder
     if save_result:
-        os.makedirs("results", exist_ok=True)
-        out_path = f"results/visual_check_idx_{image_idx}.png"
+        os.makedirs("results/buildings", exist_ok=True)
+        out_path = f"results/buildings/check_idx_{image_idx}.png"
         plt.savefig(out_path, dpi=300, bbox_inches='tight')
-        print(f"✅ Success! Comparison saved to: {out_path}")
+        print(f"✅ Success! Building check saved to: {out_path}")
         
     plt.show()
 
 if __name__ == "__main__":
-    # Check for the Drive model first, then local
-    DRIVE_PATH = "/content/drive/MyDrive/datasets/road_model_latest.pth"
-    LOCAL_PATH = "best_model.pth"
+    # Check for the Drive model first
+    DRIVE_PATH = "/content/drive/MyDrive/datasets/building_model_latest.pth"
+    LOCAL_PATH = "building_model_best.pth"
     
     current_model = DRIVE_PATH if os.path.exists(DRIVE_PATH) else LOCAL_PATH
     
-    # Let's check a few different indices to see how it handles varied terrain
-    for idx in [7, 15, 22]:
-        run_visual_check(model_path=current_model, image_idx=idx)
+    # Check indices that typically have dense buildings
+    for idx in [10, 50, 100]:
+        run_building_check(model_path=current_model, image_idx=idx)

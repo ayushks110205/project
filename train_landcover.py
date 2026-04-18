@@ -1,40 +1,47 @@
 import torch
 import torch.optim as optim
 import os
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 import segmentation_models_pytorch as smp
-from dataset import DeepGlobeLandCoverDataset, train_transform
+# Fixed: Syncing names with your dataset.py
+from dataset import DeepGlobeLandCoverDataset, train_transform 
 from models import get_landcover_model
 
 # 1. Setup Device
-device = torch.device("cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Pro-Tip: Speeds up training for constant input sizes (512x512)
+torch.backends.cudnn.benchmark = True
 
 # 2. Initialize Data
-# Land Cover images are 2448x2448, much larger than the Road patches.
-full_ds = DeepGlobeLandCoverDataset(image_dir='datasets/train', mask_dir='datasets/train', transform=train_transform)
+train_ds = DeepGlobeLandCoverDataset(
+    image_dir='datasets/train', 
+    mask_dir='datasets/train', 
+    transform=train_transform
+)
 
-# SMOKE TEST: Limit to 50 images for verification
-subset_indices = list(range(50))
-train_ds = Subset(full_ds, subset_indices)
-
-# Batch size 2 is required for Batch Normalization layers
-train_loader = DataLoader(train_ds, batch_size=2, shuffle=True)
+# Batch size 8 is a sweet spot for T4 VRAM. 
+# If you get an 'Out of Memory' error, change this to 4.
+train_loader = DataLoader(train_ds, batch_size=8, shuffle=True, num_workers=2)
 
 # 3. Initialize Multi-Class Model (7 classes)
 model = get_landcover_model().to(device)
 
-# 4. Multi-Class Loss Logic
-# We use 'ignore_index=6' to skip the 'Unknown' (Black/Cloud) class.
+# 4. Multi-Class Focal Loss
+# ignore_index=6 skips 'Unknown/Clouds' to keep the gradients clean
 criterion = smp.losses.FocalLoss(mode='multiclass', ignore_index=6)
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-def train_landcover(epochs=1):
-    print(f"Starting Land Cover SMOKE TEST on {device}...")
+def train_landcover(epochs=25):
+    print(f"🚀 Starting Multiclass Training on: {device}")
+    print(f"📊 Dataset Size: {len(train_ds)} images")
     
+    best_loss = float('inf')
+
     for epoch in range(epochs):
         model.train()
+        epoch_loss = 0
+        
         for i, (images, masks) in enumerate(train_loader):
-            # images: (B, 3, H, W), masks: (B, H, W)
             images, masks = images.to(device), masks.to(device)
             
             optimizer.zero_grad()
@@ -43,15 +50,26 @@ def train_landcover(epochs=1):
             loss.backward()
             optimizer.step()
             
-            if i % 5 == 0:
-                print(f"Batch {i} | Multi-class Loss: {loss.item():.4f}")
-                
-            # Intermediate checkpoint
-            if i % 10 == 0:
-                torch.save(model.state_dict(), "landcover_best.pth")
-                print(f"---> INTERMEDIATE SAVE: 'landcover_best.pth' updated.")
+            epoch_loss += loss.item()
+            
+            if i % 20 == 0:
+                print(f"Epoch [{epoch+1}/{epochs}] | Batch [{i}/{len(train_loader)}] | Loss: {loss.item():.4f}")
 
-    print("Training finished! You can now run your visualization script.")
+        # Calculate average epoch loss for checkpointing
+        avg_loss = epoch_loss / len(train_loader)
+        print(f"✅ Epoch {epoch+1} Complete | Average Loss: {avg_loss:.4f}")
+
+        # Permanent Save to Google Drive
+        save_path = "/content/drive/MyDrive/datasets/landcover_latest.pth"
+        
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            # Always keep a local copy and a cloud copy
+            torch.save(model.state_dict(), "landcover_best.pth") 
+            torch.save(model.state_dict(), save_path)
+            print(f"🌟 New Best Landcover Model Saved to Drive!")
+
+    print("🏁 Training finished! You are ready for the Multiclass Visualization.")
 
 if __name__ == "__main__":
-    train_landcover()
+    train_landcover(epochs=25)

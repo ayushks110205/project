@@ -23,3 +23,15 @@ def get_landcover_model():
         classes=7,                      # 7 classes: Urban, Agriculture, etc.
         activation=None
     )
+
+# Add this to your local models.py
+def get_building_model():
+    # Using ResNet34 this time could be a good "upgrade" for buildings 
+    # to capture finer details, but ResNet18 works too!
+    model = smp.Unet(
+        encoder_name="resnet18",
+        encoder_weights="imagenet",
+        in_channels=3,
+        classes=1 # Binary: Building or Not Building
+    )
+    return model
