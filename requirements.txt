@@ -1,0 +1,25 @@
+# Core Deep Learning
+torch
+torchvision
+torchgeo
+segmentation-models-pytorch  # High-level API for U-Net and DeepLabV3+
+
+# Geospatial & Imaging
+rasterio                     # For reading GeoTIFF satellite data 
+fiona                        # For handling vector data (building polygons) [cite: 153]
+shapely                      # For geometric operations on building footprints 
+pyproj                       # For coordinate transformations
+opencv-python                # General image processing
+Pillow                       # Image manipulation for smaller tiles
+scikit-image                 # For pixel-level analysis and IoU calculations [cite: 143]
+
+# Data Science & Visualization
+numpy
+pandas
+matplotlib
+tqdm                         # Progress bars for long training sessions
+
+# Augmentation & Utilities
+albumentations               # Best-in-class for segmentation data augmentation
+scikit-learn                 # For F1-score and general ML metrics [cite: 163]
+awscli                       # To download SpaceNet data from AWS [cite: 76]
