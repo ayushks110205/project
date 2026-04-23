@@ -30,6 +30,7 @@
 
 import os
 import gc
+import ctypes
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -43,16 +44,32 @@ try:
     _HAS_PSUTIL = True
 except ImportError:
     _HAS_PSUTIL = False
-    print("⚠️  psutil not found — install with: pip install psutil")
-    print("   RAM diagnostics will be skipped.")
 
 
 def _ram_gb() -> float:
     """Return current process RSS in GB (requires psutil)."""
     if not _HAS_PSUTIL:
         return -1.0
-    import os
     return psutil.Process(os.getpid()).memory_info().rss / 1e9
+
+
+def _trim_heap():
+    """
+    Force glibc to return free heap pages to the OS.
+
+    Python's memory allocator (glibc malloc) holds freed memory speculatively
+    for reuse rather than returning it to the OS.  Over 35 epochs of loading
+    12K+ satellite images this fragmented heap grows by several GB even though
+    gc.collect() reports 0 uncollectable objects.
+
+    malloc_trim(0) instructs glibc to release all releasable free pages
+    immediately.  On Linux (Kaggle) libc.so.6 is always present.
+    This is a no-op on non-Linux platforms — the try/except makes it safe.
+    """
+    try:
+        ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except Exception:
+        pass  # non-Linux (Windows dev machines) — silently skip
 
 # ── Local imports ─────────────────────────────────────────────────────────────
 from dataset import get_road_splits
@@ -92,6 +109,15 @@ CHECKPOINT_EVERY    = 5
 device        = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 n_gpus        = torch.cuda.device_count()
 USE_MULTI_GPU = n_gpus > 1
+
+# ── cuDNN memory control ──────────────────────────────────────────────────────
+# benchmark=False : cuDNN picks a deterministic algorithm on first call and
+#   reuses it forever.  benchmark=True (the default) probes EVERY convolution
+#   shape variant it encounters and caches the fastest algorithm in RAM.
+#   With 35 epochs × 622 batches this cache grows continuously and is a
+#   primary source of the 24 GB → 30 GB RAM creep seen in training.
+torch.backends.cudnn.benchmark   = False
+torch.backends.cudnn.deterministic = True
 
 if torch.cuda.is_available():
     for i in range(n_gpus):
@@ -137,11 +163,19 @@ def train_road(epochs: int = NUM_EPOCHS):
     gc.collect()   # flush any lingering temporaries from the split
     print(f"🩺 RAM after split   : {_ram_gb():.2f} GB")
 
-    # num_workers=0: data loading runs in the main process.
-    # No subprocess workers → zero shared-memory buffers → eliminates the
-    # RAM spike that was crashing at epoch 2.  pin_memory is also disabled
-    # because it only helps when workers copy into pinned memory from
-    # subprocesses (irrelevant at num_workers=0).
+    # ── DataLoaders ────────────────────────────────────────────────────────────
+    # num_workers=0: ALL data loading runs in the main process.
+    #
+    # WHY NOT workers > 0 despite slower GPU utilisation:
+    #   Each DataLoader worker spawns a FULL Python subprocess that imports
+    #   PyTorch, cv2, albumentations, and the dataset class.  On Kaggle, each
+    #   worker costs ~1.5–2 GB of RAM at startup.  With 2 workers that is an
+    #   immediate +3–4 GB hit on top of the existing ~24 GB baseline, pushing
+    #   the total to ~28 GB and leaving only ~2 GB headroom — any training
+    #   tensor allocation then triggers the kernel OOM killer.
+    #
+    # pin_memory=False: pinned memory is only beneficial when workers write
+    #   into it from subprocesses (irrelevant at num_workers=0).
     train_loader = DataLoader(
         train_ds, batch_size=BATCH_SIZE, shuffle=True,
         num_workers=0, pin_memory=False, drop_last=True
@@ -297,8 +331,18 @@ def train_road(epochs: int = NUM_EPOCHS):
             }, ckpt_path)
             print(f"   💾 Backup → {ckpt_path}")
 
-        # ── Clear GPU cache ────────────────────────────────────────────────────
+        # ── End-of-epoch memory hygiene ───────────────────────────────────────
+        # Three-layer RAM reclamation to prevent the 24→30 GB creep:
+        #
+        # 1. empty_cache()  : returns cached GPU tensors to CUDA allocator
+        # 2. gc.collect()   : breaks Python reference cycles
+        # 3. malloc_trim(0) : forces glibc to return free heap pages to the OS
+        #    (Python holds freed RAM speculatively — this is what causes the
+        #     slow per-epoch RAM growth even after gc.collect() succeeds)
         torch.cuda.empty_cache()
+        gc.collect()
+        _trim_heap()
+        print(f"   🩺 RAM end-of-epoch {epoch:02d}: {_ram_gb():.2f} GB")
 
         # ── Early Stopping ────────────────────────────────────────────────────
         if epochs_no_improve >= EARLY_STOP_PATIENCE:
