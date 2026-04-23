@@ -52,16 +52,21 @@ class DeepGlobeRoadDataset(Dataset):
     """
 
     def __init__(self, image_dir: str, mask_dir: str, transform=None,
-                 indices=None):
+                 indices=None, _prebuilt_list=None):
         self.image_dir = image_dir
         self.mask_dir  = mask_dir
         self.transform = transform
 
-        all_images = sorted(
-            [f for f in os.listdir(image_dir) if f.endswith('_sat.jpg')]
-        )
-        self.images = [all_images[i] for i in indices] if indices is not None \
-                      else all_images
+        # Accept a pre-built sorted list to avoid redundant os.listdir() calls
+        # when get_road_splits() has already scanned the directory.
+        if _prebuilt_list is not None:
+            source = _prebuilt_list
+        else:
+            source = sorted(
+                [f for f in os.listdir(image_dir) if f.endswith('_sat.jpg')]
+            )
+        self.images = [source[i] for i in indices] if indices is not None \
+                      else list(source)
 
     def __len__(self):
         return len(self.images)
@@ -89,7 +94,14 @@ class DeepGlobeRoadDataset(Dataset):
 
 
 def get_road_splits(image_dir: str, mask_dir: str, val_ratio: float = 0.2):
-    """Returns (train_dataset, val_dataset) with a deterministic 80/20 split."""
+    """Returns (train_dataset, val_dataset) with a deterministic 80/20 split.
+
+    Scans the directory only ONCE and passes the pre-built list into each
+    Dataset so __init__ never calls os.listdir() again.  The intermediate
+    list is explicitly deleted after the Datasets have sliced their indices,
+    freeing ~3–5 MB of string objects immediately.
+    """
+    import gc
     all_images = sorted(
         [f for f in os.listdir(image_dir) if f.endswith('_sat.jpg')]
     )
@@ -99,12 +111,20 @@ def get_road_splits(image_dir: str, mask_dir: str, val_ratio: float = 0.2):
 
     train_ds = DeepGlobeRoadDataset(
         image_dir=image_dir, mask_dir=mask_dir,
-        transform=train_transform, indices=list(range(n_train))
+        transform=train_transform,
+        indices=list(range(n_train)),
+        _prebuilt_list=all_images,          # ← skip redundant os.listdir()
     )
     val_ds = DeepGlobeRoadDataset(
         image_dir=image_dir, mask_dir=mask_dir,
-        transform=val_transform, indices=list(range(n_train, n_total))
+        transform=val_transform,
+        indices=list(range(n_train, n_total)),
+        _prebuilt_list=all_images,          # ← same pre-built list reused
     )
+
+    del all_images   # ← free intermediate list now that Datasets hold their slices
+    gc.collect()
+
     print(f"📂 Road split → Train: {len(train_ds)} | Val: {len(val_ds)}")
     return train_ds, val_ds
 
@@ -133,15 +153,18 @@ class DeepGlobeLandCoverDataset(Dataset):
                    'Water', 'Barren', 'Unknown']
 
     def __init__(self, image_dir: str, mask_dir: str, transform=None,
-                 indices=None):
+                 indices=None, _prebuilt_list=None):
         self.image_dir = image_dir
         self.mask_dir  = mask_dir
         self.transform = transform
-        all_images = sorted(
-            [f for f in os.listdir(image_dir) if f.endswith('_sat.jpg')]
-        )
-        self.images = [all_images[i] for i in indices] \
-                      if indices is not None else all_images
+        if _prebuilt_list is not None:
+            source = _prebuilt_list
+        else:
+            source = sorted(
+                [f for f in os.listdir(image_dir) if f.endswith('_sat.jpg')]
+            )
+        self.images = [source[i] for i in indices] \
+                      if indices is not None else list(source)
         self._palette   = np.array(list(self.COLOR_MAP.keys()),  dtype=np.float32)
         self._class_ids = np.array(list(self.COLOR_MAP.values()), dtype=np.int64)
 
@@ -209,6 +232,7 @@ class DeepGlobeLandCoverDataset(Dataset):
 
 def get_landcover_splits(image_dir: str, mask_dir: str, val_ratio: float = 0.2):
     """Returns (train_ds, val_ds) with deterministic 80/20 split."""
+    import gc
     all_images = sorted(
         [f for f in os.listdir(image_dir) if f.endswith('_sat.jpg')]
     )
@@ -218,13 +242,17 @@ def get_landcover_splits(image_dir: str, mask_dir: str, val_ratio: float = 0.2):
     train_ds = DeepGlobeLandCoverDataset(
         image_dir, mask_dir,
         transform=landcover_train_transform,
-        indices=list(range(n_train))
+        indices=list(range(n_train)),
+        _prebuilt_list=all_images,
     )
     val_ds = DeepGlobeLandCoverDataset(
         image_dir, mask_dir,
         transform=landcover_val_transform,
-        indices=list(range(n_train, n_total))
+        indices=list(range(n_train, n_total)),
+        _prebuilt_list=all_images,
     )
+    del all_images
+    gc.collect()
     print(f"📂 LandCover split → Train: {len(train_ds)} | Val: {len(val_ds)}")
     return train_ds, val_ds
 
@@ -259,16 +287,19 @@ class DeepGlobeBuildingDataset(Dataset):
     """
 
     def __init__(self, image_dir: str, mask_dir: str,
-                 transform=None, indices=None):
+                 transform=None, indices=None, _prebuilt_list=None):
         self.image_dir = image_dir
         self.mask_dir  = mask_dir
         self.transform = transform
 
-        all_images = sorted(
-            [f for f in os.listdir(image_dir) if f.endswith('_sat.jpg')]
-        )
-        self.images = [all_images[i] for i in indices] \
-                      if indices is not None else all_images
+        if _prebuilt_list is not None:
+            source = _prebuilt_list
+        else:
+            source = sorted(
+                [f for f in os.listdir(image_dir) if f.endswith('_sat.jpg')]
+            )
+        self.images = [source[i] for i in indices] \
+                      if indices is not None else list(source)
 
     def __len__(self):
         return len(self.images)
@@ -388,6 +419,7 @@ def get_building_splits(image_dir: str, mask_dir: str,
     Returns:
         train_ds, val_ds – DeepGlobeBuildingDataset instances
     """
+    import gc
     all_images = sorted(
         [f for f in os.listdir(image_dir) if f.endswith('_sat.jpg')]
     )
@@ -398,13 +430,17 @@ def get_building_splits(image_dir: str, mask_dir: str,
     train_ds = DeepGlobeBuildingDataset(
         image_dir, mask_dir,
         transform=building_train_transform,
-        indices=list(range(n_train))
+        indices=list(range(n_train)),
+        _prebuilt_list=all_images,
     )
     val_ds = DeepGlobeBuildingDataset(
         image_dir, mask_dir,
         transform=building_val_transform,
-        indices=list(range(n_train, n_total))
+        indices=list(range(n_train, n_total)),
+        _prebuilt_list=all_images,
     )
+    del all_images
+    gc.collect()
     print(f"📂 Building split → Train: {len(train_ds)} | Val: {len(val_ds)}")
     return train_ds, val_ds
 

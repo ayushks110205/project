@@ -29,6 +29,7 @@
 # =============================================================================
 
 import os
+import gc
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -37,6 +38,21 @@ from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 import segmentation_models_pytorch as smp
+try:
+    import psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
+    print("⚠️  psutil not found — install with: pip install psutil")
+    print("   RAM diagnostics will be skipped.")
+
+
+def _ram_gb() -> float:
+    """Return current process RSS in GB (requires psutil)."""
+    if not _HAS_PSUTIL:
+        return -1.0
+    import os
+    return psutil.Process(os.getpid()).memory_info().rss / 1e9
 
 # ── Local imports ─────────────────────────────────────────────────────────────
 from dataset import get_road_splits
@@ -116,7 +132,10 @@ def update_iou_dice(pred_prob: np.ndarray, target: np.ndarray,
 
 def train_road(epochs: int = NUM_EPOCHS):
     # ── 4a. Data ──────────────────────────────────────────────────────────────
+    print(f"\n🩺 RAM before split  : {_ram_gb():.2f} GB")
     train_ds, val_ds = get_road_splits(IMAGE_DIR, MASK_DIR, val_ratio=VAL_RATIO)
+    gc.collect()   # flush any lingering temporaries from the split
+    print(f"🩺 RAM after split   : {_ram_gb():.2f} GB")
 
     # num_workers=0: data loading runs in the main process.
     # No subprocess workers → zero shared-memory buffers → eliminates the
@@ -131,6 +150,7 @@ def train_road(epochs: int = NUM_EPOCHS):
         val_ds, batch_size=BATCH_SIZE, shuffle=False,
         num_workers=0, pin_memory=False
     )
+    print(f"🩺 RAM after loaders : {_ram_gb():.2f} GB")
 
     print(f"\n🚀 Road Training | Device: {device}")
     print(f"   Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
@@ -138,6 +158,7 @@ def train_road(epochs: int = NUM_EPOCHS):
 
     # ── 4b. Model  +  DataParallel ────────────────────────────────────────────
     model = get_road_model().to(device)
+    print(f"🩺 RAM after model   : {_ram_gb():.2f} GB")
     if USE_MULTI_GPU:
         model = nn.DataParallel(model)
         print(f"   Model wrapped in DataParallel across {n_gpus} GPUs")
