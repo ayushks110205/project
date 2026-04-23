@@ -103,9 +103,11 @@ def save_visual(complete: np.ndarray, corrupted: np.ndarray,
 # Section 3 ▸ Main Evaluation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_evaluation(model_path: str, mask_dir: str = 'datasets/train',
+def run_evaluation(model_path: str,
+                   mask_dir: str = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
                    val_ratio: float = 0.20, threshold: float = 0.50,
-                   n_visuals: int = 5, save_dir: str = 'results/inpainting_eval'):
+                   n_visuals: int = 5,
+                   save_dir: str = '/kaggle/working/results/inpainting_eval'):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"📊 Inpainting Evaluation | Device: {device}")
@@ -117,7 +119,7 @@ def run_evaluation(model_path: str, mask_dir: str = 'datasets/train',
 
     _, val_ds = get_inpainting_splits(mask_dir, val_ratio=val_ratio)
     loader    = DataLoader(val_ds, batch_size=8, shuffle=False,
-                           num_workers=2, pin_memory=True)
+                           num_workers=4, pin_memory=True)
     print(f"🗂️  Val images: {len(val_ds)}\n")
     os.makedirs(save_dir, exist_ok=True)
     ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -196,9 +198,7 @@ def run_evaluation(model_path: str, mask_dir: str = 'datasets/train',
 
 
 if __name__ == '__main__':
-    DRIVE = '/content/drive/MyDrive/datasets/inpainting_best.pth'
-    LOCAL = 'inpainting_best.pth'
-    mp    = DRIVE if os.path.exists(DRIVE) else LOCAL
+    mp = '/kaggle/working/inpainting_best.pth'
     if not os.path.exists(mp):
         print(f"❌ Model not found: {mp}. Train Stage 2 first.")
     else:

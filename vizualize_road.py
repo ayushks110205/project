@@ -106,12 +106,12 @@ def _iou_dice(pred_binary: np.ndarray, gt_binary: np.ndarray):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def visualise_road(model_path: str,
-                   image_dir:  str = 'datasets/train',
-                   mask_dir:   str = 'datasets/train',
+                   image_dir:  str = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
+                   mask_dir:   str = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
                    val_ratio:  float = 0.20,
                    n_samples:  int   = 5,
                    threshold:  float = 0.50,
-                   save_dir:   str   = 'results'):
+                   save_dir:   str   = '/kaggle/working/results'):
     """
     Render 5-panel diagnostic visualisations for n_samples random val images.
 
@@ -239,14 +239,11 @@ def visualise_road(model_path: str,
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    DRIVE_PATH = '/content/drive/MyDrive/datasets/road_model_latest.pth'
-    LOCAL_PATH = 'best_model.pth'
-
-    model_path = DRIVE_PATH if os.path.exists(DRIVE_PATH) else LOCAL_PATH
+    model_path = '/kaggle/working/road_model_best.pth'
 
     visualise_road(
         model_path=model_path,
         n_samples=5,
         threshold=0.5,
-        save_dir='results',
+        save_dir='/kaggle/working/results',
     )

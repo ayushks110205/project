@@ -67,8 +67,8 @@ def compute_metrics(pred_prob: np.ndarray, target: np.ndarray,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_evaluation(model_path: str,
-                   image_dir: str = 'datasets/train',
-                   mask_dir:  str = 'datasets/train',
+                   image_dir: str = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
+                   mask_dir:  str = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
                    val_ratio: float = 0.20,
                    threshold: float = 0.50,
                    top_k:     int   = 5):
@@ -96,7 +96,7 @@ def run_evaluation(model_path: str,
     _, val_ds = get_road_splits(image_dir, mask_dir, val_ratio=val_ratio)
     val_loader = DataLoader(
         val_ds, batch_size=16, shuffle=False,
-        num_workers=2, pin_memory=True
+        num_workers=4, pin_memory=True
     )
     print(f"🗂️  Evaluating on {len(val_ds)} validation images "
           f"({val_ratio*100:.0f}% of total dataset)\n")
@@ -181,11 +181,8 @@ def run_evaluation(model_path: str,
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    DRIVE_PATH = '/content/drive/MyDrive/datasets/road_model_latest.pth'
-    LOCAL_PATH = 'best_model.pth'
-
-    model_path = DRIVE_PATH if os.path.exists(DRIVE_PATH) else LOCAL_PATH
-
+    model_path = '/kaggle/working/road_model_best.pth'
+    
     if not os.path.exists(model_path):
         print(f"❌ Model not found at '{model_path}'. Train the model first.")
     else:

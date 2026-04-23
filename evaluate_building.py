@@ -5,14 +5,19 @@ from torch.utils.data import DataLoader
 from dataset import DeepGlobeBuildingDataset, val_transform
 from models import get_building_model
 
-def run_building_evaluation(model_path):
+def run_building_evaluation(
+        model_path: str = '/kaggle/working/building_model_best.pth',
+        image_dir: str = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
+        mask_dir: str  = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train'):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = get_building_model().to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
+    print(f"✅ Loaded model from: {model_path}")
 
-    dataset = DeepGlobeBuildingDataset(image_dir='datasets/train', mask_dir='datasets/train', transform=val_transform)
-    loader = DataLoader(dataset, batch_size=8, num_workers=2)
+    dataset = DeepGlobeBuildingDataset(
+        image_dir=image_dir, mask_dir=mask_dir, transform=val_transform)
+    loader = DataLoader(dataset, batch_size=16, num_workers=4, pin_memory=True)
 
     all_ious = []
     all_dices = []
@@ -39,4 +44,4 @@ def run_building_evaluation(model_path):
     print(f"Mean Dice: {np.mean(all_dices):.4f} (F1-Score)")
 
 if __name__ == "__main__":
-    run_building_evaluation("/content/drive/MyDrive/datasets/building_model_latest.pth")
+    run_building_evaluation()

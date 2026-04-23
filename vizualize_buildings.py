@@ -24,9 +24,9 @@ def run_building_check(model_path, image_idx=10, save_result=True):
 
     # 3. Load Dataset
     dataset = DeepGlobeBuildingDataset(
-        image_dir='datasets/train', 
-        mask_dir='datasets/train', 
-        transform=val_transform 
+        image_dir='/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
+        mask_dir='/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
+        transform=val_transform
     )
     
     image, mask = dataset[image_idx]
@@ -71,20 +71,16 @@ def run_building_check(model_path, image_idx=10, save_result=True):
     
     # 7. Save to the results folder
     if save_result:
-        os.makedirs("results/buildings", exist_ok=True)
-        out_path = f"results/buildings/check_idx_{image_idx}.png"
+        save_dir = '/kaggle/working/results/buildings'
+        os.makedirs(save_dir, exist_ok=True)
+        out_path = os.path.join(save_dir, f'check_idx_{image_idx}.png')
         plt.savefig(out_path, dpi=300, bbox_inches='tight')
-        print(f"✅ Success! Building check saved to: {out_path}")
+        print(f"✅ Building check saved to: {out_path}")
         
     plt.show()
 
 if __name__ == "__main__":
-    # Check for the Drive model first
-    DRIVE_PATH = "/content/drive/MyDrive/datasets/building_model_latest.pth"
-    LOCAL_PATH = "building_model_best.pth"
-    
-    current_model = DRIVE_PATH if os.path.exists(DRIVE_PATH) else LOCAL_PATH
-    
+    current_model = '/kaggle/working/building_model_best.pth'
     # Check indices that typically have dense buildings
     for idx in [10, 50, 100]:
         run_building_check(model_path=current_model, image_idx=idx)

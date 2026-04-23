@@ -19,14 +19,14 @@
 # │             (see pipeline.py for the chained inference wrapper)         │
 # └─────────────────────────────────────────────────────────────────────────┘
 #
-# Training setup (T4 free-tier optimised):
+# Training setup (Kaggle T4 ×2):
 #   • Batch size   : 8   (smaller than Stage 1 — partial conv is VRAM-heavy)
 #   • AMP          : torch.cuda.amp GradScaler + autocast  (mandatory for T4)
 #   • Optimizer    : Adam lr=2e-4, weight_decay=1e-5
 #   • Scheduler    : ReduceLROnPlateau(patience=4, factor=0.5)
 #   • Gradient clip: max_norm=1.0
 #   • Early stop   : patience=8 epochs on val L_hole
-#   • Checkpoints  : every 5 epochs (Colab disconnect insurance)
+#   • Checkpoints  : every 5 epochs → /kaggle/working/inpainting_ckpts/
 # =============================================================================
 
 import os
@@ -43,16 +43,19 @@ from inpainting_model   import get_inpainting_model
 from inpainting_losses  import InpaintingLoss
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 # Section 1 ▸ Configuration
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 
-MASK_DIR    = 'datasets/train'                  # Same folder as Stage 1
+# Kaggle dataset path  (⚠ update slug if yours differs)
+BASE_PATH   = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset'
+MASK_DIR    = f'{BASE_PATH}/train'
 IMAGE_SIZE  = 512
 
-DRIVE_BEST  = '/content/drive/MyDrive/datasets/inpainting_best.pth'
-DRIVE_CKPT  = '/content/drive/MyDrive/datasets/inpainting_ckpt_ep{:02d}.pth'
-LOCAL_BEST  = 'inpainting_best.pth'
+# Kaggle output paths  (no Google Drive on Kaggle)
+LOCAL_BEST  = '/kaggle/working/inpainting_best.pth'
+CKPT_DIR    = '/kaggle/working/inpainting_ckpts'
+os.makedirs(CKPT_DIR, exist_ok=True)
 
 BATCH_SIZE  = 8           # Smaller than Stage 1 due to partial conv overhead
 NUM_EPOCHS  = 40
@@ -70,9 +73,9 @@ LAMBDA_PERC  = 0.05
 LAMBDA_CONN  = 2.0
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Section 2 ▸ GPU Memory Check
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Section 2 ▸ GPU Setup
+# =============================================================================
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -82,14 +85,14 @@ if torch.cuda.is_available():
                   - torch.cuda.memory_allocated()) / 1e9
     print(f"🖥️  GPU : {torch.cuda.get_device_name(0)}")
     print(f"📦 VRAM: Total {total_vram:.1f}GB | Free {free_vram:.1f}GB")
-    print("⚡ AMP (fp16) is ENABLED — mandatory for T4 free tier\n")
+    print("⚡ AMP (fp16) is ENABLED\n")
 else:
     print("⚠️  No CUDA GPU detected — running on CPU (training will be very slow)")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 # Section 3 ▸ Quick Metric Helper
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 
 def compute_hole_iou(pred_np:      np.ndarray,
                      target_np:    np.ndarray,
@@ -115,9 +118,8 @@ def compute_hole_iou(pred_np:      np.ndarray,
 
     ious = []
     for p, t, h in zip(pred_bin, target, hole):
-        # Only evaluate inside hole
-        p_h = p  * h
-        t_h = t  * h
+        p_h = p * h
+        t_h = t * h
         inter = np.logical_and(p_h, t_h).sum()
         union = np.logical_or(p_h, t_h).sum()
         ious.append((inter + 1e-6) / (union + 1e-6))
@@ -125,9 +127,9 @@ def compute_hole_iou(pred_np:      np.ndarray,
     return float(np.mean(ious))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 # Section 4 ▸ Main Training Function
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 
 def train_inpainting(epochs: int = NUM_EPOCHS):
     # ── 4a. Data ──────────────────────────────────────────────────────────────
@@ -135,11 +137,11 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
 
     train_loader = DataLoader(
         train_ds, batch_size=BATCH_SIZE, shuffle=True,
-        num_workers=2, pin_memory=True
+        num_workers=4, pin_memory=True, drop_last=True
     )
     val_loader = DataLoader(
         val_ds, batch_size=BATCH_SIZE, shuffle=False,
-        num_workers=2, pin_memory=True
+        num_workers=4, pin_memory=True
     )
 
     print(f"🚀 Stage 2 Inpainting Training | Device: {device}")
@@ -197,10 +199,9 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
             hole_mask = hole_mask.to(device, non_blocking=True)
             complete  = complete.to(device, non_blocking=True)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             with autocast():
-                # Forward: (B,1,H,W), (B,1,H,W) → (B,1,H,W)
                 pred   = model(corrupted, hole_mask)
                 losses = loss_fn(pred, complete, hole_mask)
 
@@ -292,26 +293,19 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
             f"{vram_str}"
         )
 
-        # ── Best Model Checkpoint (by VAL L_hole) ────────────────────────────
+        # ── Best Model Checkpoint (by VAL L_hole) ─────────────────────────────
         if avg_val_hole < best_val_hole:
             best_val_hole     = avg_val_hole
             epochs_no_improve = 0
-
             torch.save(model.state_dict(), LOCAL_BEST)
-            if os.path.exists('/content/drive/MyDrive'):
-                torch.save(model.state_dict(), DRIVE_BEST)
-                print(f"   🌟 New best val_hole={best_val_hole:.4f} → saved to Drive")
-            else:
-                print(f"   🌟 New best val_hole={best_val_hole:.4f} → saved locally")
+            print(f"   🌟 New best val_hole={best_val_hole:.4f} → saved to {LOCAL_BEST}")
         else:
             epochs_no_improve += 1
             print(f"   ⏳ No improvement: {epochs_no_improve}/{EARLY_STOP_PATIENCE}")
 
-        # ── Periodic Checkpoint ───────────────────────────────────────────────
+        # ── Periodic Checkpoint ────────────────────────────────────────────────
         if epoch % CHECKPOINT_EVERY == 0:
-            ckpt_path = DRIVE_CKPT.format(epoch) \
-                        if os.path.exists('/content/drive/MyDrive') \
-                        else f'inpainting_ckpt_ep{epoch:02d}.pth'
+            ckpt_path = os.path.join(CKPT_DIR, f'inpainting_ckpt_ep{epoch:02d}.pth')
             torch.save({
                 'epoch':         epoch,
                 'model_state':   model.state_dict(),
@@ -321,7 +315,7 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
             }, ckpt_path)
             print(f"   💾 Checkpoint → {ckpt_path}")
 
-        # ── Clear GPU cache (prevents Colab OOM) ─────────────────────────────
+        # ── Clear GPU cache ────────────────────────────────────────────────────
         torch.cuda.empty_cache()
 
         # ── Early Stopping ────────────────────────────────────────────────────
@@ -336,15 +330,16 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
     print("=" * 60)
     print(f"  Best Val L_hole  : {best_val_hole:.4f}")
     print(f"  Best Hole IoU    : {max(history['val_iou']):.4f}")
-    print(f"  Model saved to   : {LOCAL_BEST}")
+    print(f"  Best model saved : {LOCAL_BEST}")
+    print(f"  Checkpoints      : {CKPT_DIR}/")
     print("=" * 60)
 
     return history
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 # Section 5 ▸ Entry Point
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 
 if __name__ == '__main__':
     history = train_inpainting(epochs=NUM_EPOCHS)

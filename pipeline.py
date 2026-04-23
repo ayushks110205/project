@@ -186,7 +186,7 @@ class RoadInpaintingPipeline:
             image_path:      str,
             hole_mask_path:  str   = None,
             min_hole_frac:   float = 0.05,
-            save_dir:        str   = 'results/pipeline',
+            save_dir:        str   = '/kaggle/working/results/pipeline',
             save_figure:     bool  = True) -> dict:
         """
         Run the full two-stage pipeline on a satellite image.
@@ -294,7 +294,7 @@ if __name__ == '__main__':
     parser.add_argument('--s1',     required=True, help='Stage 1 model .pth path')
     parser.add_argument('--s2',     required=True, help='Stage 2 model .pth path')
     parser.add_argument('--hole',   default=None,  help='Optional hole mask path')
-    parser.add_argument('--outdir', default='results/pipeline')
+    parser.add_argument('--outdir', default='/kaggle/working/results/pipeline')
     parser.add_argument('--t1',     type=float, default=0.5, help='Stage 1 threshold')
     parser.add_argument('--t2',     type=float, default=0.5, help='Stage 2 threshold')
     args = parser.parse_args()
