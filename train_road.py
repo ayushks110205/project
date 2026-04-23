@@ -118,25 +118,18 @@ def train_road(epochs: int = NUM_EPOCHS):
     # ── 4a. Data ──────────────────────────────────────────────────────────────
     train_ds, val_ds = get_road_splits(IMAGE_DIR, MASK_DIR, val_ratio=VAL_RATIO)
 
-    # Why these numbers:
-    #   num_workers=2: 4 workers (2 loaders) caused 26.9/30GB RAM → OOM at epoch 2.
-    #     With the faster augmentation pipeline (no GridDistortion/GaussNoise),
-    #     2 workers now process each sample in ~5ms vs ~20ms before — enough
-    #     to keep the T4s reasonably fed.
-    #   prefetch_factor=2: 2 workers × 2 prefetch = 4 batches in flight per loader
-    #     = 4 × 24MB = 96MB.  Was 384MB per loader with prefetch_factor=4.
-    #   persistent_workers: True on train (avoids per-epoch restart cost),
-    #     False on val (workers shut down after val so they don't hold epoch-3
-    #     prefetched data simultaneously with starting val — that was the crash).
+    # num_workers=0: data loading runs in the main process.
+    # No subprocess workers → zero shared-memory buffers → eliminates the
+    # RAM spike that was crashing at epoch 2.  pin_memory is also disabled
+    # because it only helps when workers copy into pinned memory from
+    # subprocesses (irrelevant at num_workers=0).
     train_loader = DataLoader(
         train_ds, batch_size=BATCH_SIZE, shuffle=True,
-        num_workers=2, pin_memory=True, drop_last=True,
-        persistent_workers=True, prefetch_factor=2
+        num_workers=0, pin_memory=False, drop_last=True
     )
     val_loader = DataLoader(
         val_ds, batch_size=BATCH_SIZE, shuffle=False,
-        num_workers=2, pin_memory=True,
-        persistent_workers=False, prefetch_factor=2
+        num_workers=0, pin_memory=False
     )
 
     print(f"\n🚀 Road Training | Device: {device}")
