@@ -31,12 +31,16 @@ from models import get_landcover_model
 # ⚠ Update DATASET_NAME to match your Kaggle dataset slug.
 # Input datasets are READ-ONLY at /kaggle/input/<slug>/
 # All outputs (models, checkpoints) go to /kaggle/working/ (persistent).
-DATASET_NAME = 'deepglobe-land-cover'          # <-- set your Kaggle dataset slug
-IMAGE_DIR    = f'/kaggle/input/{DATASET_NAME}/images'
-MASK_DIR     = f'/kaggle/input/{DATASET_NAME}/masks'
+# ✅ Slug is correct
+DATASET_NAME = 'deep-globe-extraction-dataset' 
+
+# ❌ CHANGE THESE: They should both point to the 'train' folder
+IMAGE_DIR    = f'/kaggle/input/{DATASET_NAME}/train'
+MASK_DIR     = f'/kaggle/input/{DATASET_NAME}/train'
+
+# ✅ These are correct for saving your work
 SAVE_PATH    = '/kaggle/working/landcover_model_latest.pth'
 CKPT_DIR     = '/kaggle/working/landcover_ckpts'
-
 NUM_CLASSES   = 7
 EPOCHS        = 40
 # T4 ×2 = 30 GB total VRAM. batch_size=16 distributes 8 samples per GPU

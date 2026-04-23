@@ -46,10 +46,16 @@ from models import get_road_model
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Paths
-IMAGE_DIR  = 'datasets/train'
-MASK_DIR   = 'datasets/train'
-DRIVE_PATH = '/content/drive/MyDrive/datasets/road_model_latest.pth'
-LOCAL_BEST = 'best_model.pth'
+# ✅ Use the full path that your test cell successfully validated
+BASE_PATH    = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset'
+
+# 📍 Both point to the same folder because sat.jpg and _mask.png live together
+IMAGE_DIR    = f'{BASE_PATH}/train'
+MASK_DIR     = f'{BASE_PATH}/train'
+
+# ✅ Paths for saving road-specific outputs
+SAVE_PATH    = '/kaggle/working/road_model_best.pth'
+CKPT_DIR     = '/kaggle/working/road_ckpts'
 
 # Hyperparameters
 BATCH_SIZE  = 16        # Safe for T4 at 512×512 with AMP fp16
