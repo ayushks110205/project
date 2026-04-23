@@ -25,14 +25,15 @@ from dataset import get_landcover_splits, DeepGlobeLandCoverDataset
 from models import get_landcover_model
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Config
+# Config  — Kaggle paths
 # ─────────────────────────────────────────────────────────────────────────────
-IMAGE_DIR   = '/content/drive/MyDrive/datasets/landcover/images'
-MASK_DIR    = '/content/drive/MyDrive/datasets/landcover/masks'
-MODEL_PATH  = '/content/drive/MyDrive/datasets/landcover_model_latest.pth'
-RESULTS_DIR = 'results'
-NUM_SAMPLES = 6
-SEED        = 42
+DATASET_NAME = 'deepglobe-land-cover'   # ⚠ match your Kaggle dataset slug
+IMAGE_DIR    = f'/kaggle/input/{DATASET_NAME}/images'
+MASK_DIR     = f'/kaggle/input/{DATASET_NAME}/masks'
+MODEL_PATH   = '/kaggle/working/landcover_model_latest.pth'
+RESULTS_DIR  = '/kaggle/working/results'
+NUM_SAMPLES  = 6
+SEED         = 42
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

@@ -21,16 +21,17 @@ from dataset import get_landcover_splits, DeepGlobeLandCoverDataset
 from models import get_landcover_model
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Config
+# Config  — Kaggle paths
 # ─────────────────────────────────────────────────────────────────────────────
-IMAGE_DIR  = '/content/drive/MyDrive/datasets/landcover/images'
-MASK_DIR   = '/content/drive/MyDrive/datasets/landcover/masks'
-MODEL_PATH = '/content/drive/MyDrive/datasets/landcover_model_latest.pth'
-RESULTS_DIR = 'results'
+DATASET_NAME = 'deepglobe-land-cover'   # ⚠ match your Kaggle dataset slug
+IMAGE_DIR    = f'/kaggle/input/{DATASET_NAME}/images'
+MASK_DIR     = f'/kaggle/input/{DATASET_NAME}/masks'
+MODEL_PATH   = '/kaggle/working/landcover_model_latest.pth'
+RESULTS_DIR  = '/kaggle/working/results'
 
 NUM_CLASSES = 7
-BATCH_SIZE  = 8
-NUM_WORKERS = 2
+BATCH_SIZE  = 16   # match training batch size
+NUM_WORKERS = 4
 CLASS_NAMES = DeepGlobeLandCoverDataset.CLASS_NAMES
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
