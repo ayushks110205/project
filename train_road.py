@@ -118,19 +118,20 @@ def train_road(epochs: int = NUM_EPOCHS):
     # ── 4a. Data ──────────────────────────────────────────────────────────────
     train_ds, val_ds = get_road_splits(IMAGE_DIR, MASK_DIR, val_ratio=VAL_RATIO)
 
-    # OOM FIX #2: num_workers 4 → 2
-    # Each worker pre-fetches full 512×512 batches into shared memory.
-    # With 2 DataLoaders alive simultaneously, 4 workers = 8 background
-    # processes each holding batches — easily saturates system RAM.
+    # num_workers=4: one worker per logical GPU — keeps both T4s fed.
+    # prefetch_factor=4: pre-loads 4 batches ahead so GPU never starves.
+    # persistent_workers=True: avoids worker re-spawn overhead each epoch.
+    # With the faster augmentation pipeline in dataset.py (no GridDistortion/
+    # GaussNoise), 4 workers comfortably saturate T4 ×2 throughput.
     train_loader = DataLoader(
         train_ds, batch_size=BATCH_SIZE, shuffle=True,
-        num_workers=2, pin_memory=True, drop_last=True,
-        persistent_workers=True    # avoids worker re-spawn overhead each epoch
+        num_workers=4, pin_memory=True, drop_last=True,
+        persistent_workers=True, prefetch_factor=4
     )
     val_loader = DataLoader(
         val_ds, batch_size=BATCH_SIZE, shuffle=False,
-        num_workers=2, pin_memory=True,
-        persistent_workers=True
+        num_workers=4, pin_memory=True,
+        persistent_workers=True, prefetch_factor=4
     )
 
     print(f"\n🚀 Road Training | Device: {device}")

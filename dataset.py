@@ -331,53 +331,45 @@ _MEAN = (0.485, 0.456, 0.406)
 _STD  = (0.229, 0.224, 0.225)
 
 # ── Training Transform ──────────────────────────────────────────────────────
-# Heavy augmentation strategy for road segmentation.
+# Augmentation tuned for GPU throughput on Kaggle T4 ×2.
 #
-# Design philosophy:
-#   • Geometric augmentations (Rotate90, ShiftScaleRotate, GridDistortion)
-#     teach invariance to road orientation and slight warp — satellite images
-#     capture roads from many angles.
-#   • Photometric augmentations (BrightnessContrast, GaussNoise) simulate
-#     haze, shadow, and sensor noise common in satellite imagery.
-#   • CoarseDropout (Cutout): randomly blacks out rectangular patches.
-#     This is DELIBERATE preparation for the downstream MAP INPAINTING task —
-#     the model learns to reason about roads even when segments are occluded,
-#     mirroring the masked-region inputs the inpainting model will receive.
+# Rule: ONLY use transforms that are fast on CPU so workers keep up with GPU.
+#   REMOVED:  A.GridDistortion  — bilinear mesh warp, very slow (~15ms/sample)
+#   REMOVED:  A.GaussNoise      — per-pixel RNG, slow at 512×512
+#   KEPT:     Flips, Rotate90   — single memcpy, <1ms
+#   KEPT:     ShiftScaleRotate  — single affine warp, ~3ms
+#   KEPT:     BrightnessContrast, HueSaturationValue — fast LUT operations
+#   KEPT:     CoarseDropout     — rectangle fill, <1ms
+#
+# If GPU utilisation drops below ~70%, reduce augmentation further or
+# increase num_workers in the DataLoader.
 
 train_transform = A.Compose([
     # ── Resize to network input ──────────────────────────────────────────
     A.Resize(height=512, width=512),
 
-    # ── Spatial / geometric ──────────────────────────────────────────────
+    # ── Spatial / geometric (all fast: single-pass warp or memcpy) ───────
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
     A.RandomRotate90(p=0.5),
     A.ShiftScaleRotate(
         shift_limit=0.1,
-        scale_limit=0.2,
-        rotate_limit=45,
+        scale_limit=0.15,
+        rotate_limit=30,
         border_mode=cv2.BORDER_REFLECT_101,
-        p=0.4
+        p=0.35
     ),
-    # Elastic deformation — especially useful for thin curved road structures
-    A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.2),
 
-    # ── Photometric ──────────────────────────────────────────────────────
+    # ── Photometric (fast LUT / channel ops) ─────────────────────────────
     A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
-    A.GaussNoise(var_limit=(10.0, 50.0), p=0.2),
+    A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15,
+                         val_shift_limit=10, p=0.2),
 
-    # ── Cutout / CoarseDropout ───────────────────────────────────────────
-    # Simulates missing image patches (cloud cover, sensor gaps).
-    # Directly prepares the model for map inpainting robustness.
+    # ── Cutout (fast rectangle fill) ──────────────────────────────────────
     A.CoarseDropout(
-        max_holes=8,
-        max_height=32,
-        max_width=32,
-        min_holes=1,
-        min_height=8,
-        min_width=8,
-        fill_value=0,
-        p=0.1
+        max_holes=6, max_height=32, max_width=32,
+        min_holes=1, min_height=8,  min_width=8,
+        fill_value=0, p=0.1
     ),
 
     # ── Normalise & convert ───────────────────────────────────────────────
