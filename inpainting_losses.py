@@ -224,6 +224,11 @@ class InpaintingLoss(nn.Module):
 
         Uses 3 VGG blocks to balance spatial resolution vs semantic richness.
 
+        NOTE: VGG is computed in float32 regardless of the outer autocast
+        context. VGG block3 has 3×3×256 = 2304 accumulated additions per
+        pixel — in fp16 this easily overflows 65504 → inf → NaN total loss.
+        The .float() cast has identity gradient, so backprop is unaffected.
+
         Args:
             pred   : (B, 1, H, W)
             target : (B, 1, H, W)
@@ -231,15 +236,20 @@ class InpaintingLoss(nn.Module):
         Returns:
             scalar loss
         """
-        with torch.no_grad():
-            target_feats = self.vgg(target)   # list of 3 feature tensors
+        # Force float32 for VGG — prevents fp16 accumulation overflow
+        with torch.amp.autocast('cuda', enabled=False):
+            pred_f32   = pred.float()
+            target_f32 = target.float()
 
-        pred_feats = self.vgg(pred)           # list of 3 feature tensors
+            with torch.no_grad():
+                target_feats = self.vgg(target_f32)   # list of 3 feature tensors
 
-        loss = 0.0
-        for pf, tf in zip(pred_feats, target_feats):
-            # Normalise by number of elements so different resolutions contribute equally
-            loss = loss + F.l1_loss(pf, tf.detach())
+            pred_feats = self.vgg(pred_f32)           # list of 3 feature tensors
+
+            loss = 0.0
+            for pf, tf in zip(pred_feats, target_feats):
+                # Normalise by number of elements so different resolutions contribute equally
+                loss = loss + F.l1_loss(pf, tf.detach())
 
         return loss / len(pred_feats)
 

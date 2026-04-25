@@ -1,5 +1,31 @@
 datasets/
 results/
-*.pth
+results of training road/
 __pycache__/
 .vscode/
+
+# ── Model weights (.pth) ──────────────────────────────────────────────────────
+# These are excluded from git — files are 89–270 MB each and exceed
+# GitHub's 100 MB per-file hard limit.
+#
+# Local folder structure (managed manually, upload to Kaggle as datasets):
+#
+#   Road Training Checkpoints/
+#     road_ckpt_ep05.pth   ← periodic checkpoints saved every 5 epochs
+#     road_ckpt_ep10.pth   ← contain: model + optimizer + scheduler + history
+#     road_ckpt_ep15.pth   ← use RESUME_FROM_CKPT in train_road.py to restore
+#     road_ckpt_ep20.pth
+#     road_ckpt_ep25.pth
+#     road_ckpt_ep30.pth
+#     road_ckpt_ep35.pth
+#
+#   Best path/
+#     road_model_best.pth        ← best val_loss during road training (weights only)
+#     inpainting_best.pth        ← best val hole-loss during inpainting training
+#     landcover_best.pth         ← best val mIoU during landcover training
+#     building_model_best.pth    ← best val IoU during building detection training
+#
+# Root-level .pth files (legacy / intermediate):
+*.pth
+best_model.pth
+landcover_best.pth

@@ -118,8 +118,13 @@ class PartialConv2d(nn.Module):
         with torch.no_grad():
             mask_count = self.mask_conv(mask)   # sum of valid pixels in kernel
 
-        # Clamp to avoid division by zero (happens for fully-masked positions)
-        mask_count_safe = mask_count.clamp(min=1e-8)
+        # Clamp to avoid division by zero (happens for fully-masked positions).
+        # IMPORTANT: use min=1.0, NOT a small epsilon like 1e-8.
+        # In fp16, 1e-8 rounds to 0.0 (fp16 min normal ≈ 6e-5), making
+        # kernel_area/0 = inf → NaN. Min=1.0 is safe: fully-masked positions
+        # are already zeroed out by valid_positions on line 132, so the
+        # denominator value for those positions never affects the output.
+        mask_count_safe = mask_count.clamp(min=1.0)
 
         # ── Step 3: Renormalise output ────────────────────────────────────────
         # Scale each output position by (kernel_area / num_valid_pixels).

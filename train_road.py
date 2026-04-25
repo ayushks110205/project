@@ -90,6 +90,12 @@ VAL_RATIO           = 0.2
 EARLY_STOP_PATIENCE = 5
 CHECKPOINT_EVERY    = 5
 
+# ── Checkpoint Resume ─────────────────────────────────────────────────────────
+# Set to a .pth checkpoint path to resume training from that epoch.
+# Set to None to start fresh.
+# Example (Kaggle): RESUME_FROM_CKPT = '/kaggle/input/road-ckpts/road_ckpt_ep20.pth'
+RESUME_FROM_CKPT = None
+
 
 # =============================================================================
 # Section 2 ▸ GPU Setup  (P100 — single GPU)
@@ -195,10 +201,32 @@ def train_road(epochs: int = NUM_EPOCHS):
     # ── 4f. Training State ────────────────────────────────────────────────────
     best_val_loss     = float('inf')
     epochs_no_improve = 0
-    history = {'train_loss': [], 'val_loss': [], 'val_iou': [], 'val_dice': []}
+    history           = {'train_loss': [], 'val_loss': [], 'val_iou': [], 'val_dice': []}
+    start_epoch       = 1
+
+    # ── 4f-2. Resume from checkpoint (if specified) ───────────────────────────
+    if RESUME_FROM_CKPT and os.path.isfile(RESUME_FROM_CKPT):
+        print(f"\n📂 Resuming from checkpoint: {RESUME_FROM_CKPT}")
+        ckpt = torch.load(RESUME_FROM_CKPT, map_location=device)
+        model.load_state_dict(ckpt['model_state'])
+        optimizer.load_state_dict(ckpt['optim_state'])
+        best_val_loss     = ckpt.get('best_val_loss', float('inf'))
+        history           = ckpt.get('history', history)
+        start_epoch       = ckpt['epoch'] + 1  # resume from NEXT epoch
+        epochs_no_improve = 0  # reset patience — don't carry stale count
+        # Re-fast-forward the scheduler to match the restored epoch
+        for _ in range(ckpt['epoch']):
+            scheduler.step()
+        print(f"   ✅ Restored epoch {ckpt['epoch']} | best_val_loss={best_val_loss:.4f}")
+        print(f"   ▶  Continuing from epoch {start_epoch}/{epochs}\n")
+        del ckpt
+        gc.collect()
+    elif RESUME_FROM_CKPT:
+        print(f"⚠️  RESUME_FROM_CKPT set but file not found: {RESUME_FROM_CKPT}")
+        print("   Starting from scratch instead.\n")
 
     # ── 4g. Epoch Loop ────────────────────────────────────────────────────────
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         torch.cuda.reset_peak_memory_stats()   # clean slate for peak tracking
 
         # ── Train Phase ───────────────────────────────────────────────────────
