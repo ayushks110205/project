@@ -327,13 +327,15 @@ for epoch in range(start_epoch, EPOCHS + 1):
           f"time={elapsed:.1f}s  GPU={mem_gb:.2f}GB")
 
     print("  Per-class IoU:")
+    valid_iou = per_class_iou[~per_class_iou.isnan()]
+    best_val  = valid_iou.max().item() if valid_iou.numel() > 0 else float('nan')
     for name, iou_val in zip(CLASS_NAMES, per_class_iou.tolist()):
-        flag = " ← best" if (not torch.isnan(
-            per_class_iou[CLASS_NAMES.index(name)]
-        ) and iou_val == per_class_iou.nanmax().item()) else ""
-        print(f"    {name:<12s}: {iou_val:.4f}{flag}"
-              if not (iou_val != iou_val) else  # nan guard
-              f"    {name:<12s}: N/A (absent in val split)")
+        if iou_val != iou_val:   # NaN guard
+            print(f"    {name:<12s}: N/A (absent in val split)")
+        else:
+            flag = " ← best" if iou_val == best_val else ""
+            print(f"    {name:<12s}: {iou_val:.4f}{flag}")
+
 
     # ── Checkpointing ────────────────────────────────────────────────────────
     if miou > best_miou:
