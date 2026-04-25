@@ -75,7 +75,11 @@ CHECKPOINT_EVERY    = 5
 # • Override : point to a Kaggle dataset you uploaded the .pth files to, e.g.
 #              '/kaggle/input/inpainting-ckpts'
 # • Disable  : set to None to always start from scratch
-RESUME_CKPT_DIR = CKPT_DIR
+#
+# ✅ Kaggle dataset "best path" → slug: best-path
+#    Contains: inpainting_ckpt_ep30.pth  (auto-detected as highest epoch)
+#    Also has: inpainting_best.pth, road_model_best.pth
+RESUME_CKPT_DIR = '/kaggle/input/best-path'
 
 # Loss weights (must match InpaintingLoss defaults for clarity)
 LAMBDA_VALID = 1.0
