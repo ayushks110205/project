@@ -19,7 +19,7 @@ import time
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+import torch.amp
 import segmentation_models_pytorch as smp
 from tqdm import tqdm
 
@@ -32,16 +32,23 @@ from models import get_landcover_model
 # ⚠ Update DATASET_NAME to match your Kaggle dataset slug.
 # Input datasets are READ-ONLY at /kaggle/input/<slug>/
 # All outputs (models, checkpoints) go to /kaggle/working/ (persistent).
-# ✅ Slug is correct
-DATASET_NAME = 'deep-globe-extraction-dataset' 
+# ✔️ Slug is correct — full mount path includes /datasets/<username>/
+DATASET_NAME = 'deep-globe-extraction-dataset'
+DATASET_BASE = f'/kaggle/input/datasets/ayushks07/{DATASET_NAME}'
 
-# ❌ CHANGE THESE: They should both point to the 'train' folder
-IMAGE_DIR    = f'/kaggle/input/{DATASET_NAME}/train'
-MASK_DIR     = f'/kaggle/input/{DATASET_NAME}/train'
+IMAGE_DIR    = f'{DATASET_BASE}/train'
+MASK_DIR     = f'{DATASET_BASE}/train'
 
-# ✅ These are correct for saving your work
-SAVE_PATH    = '/kaggle/working/landcover_model_latest.pth'
+# ✔️ These are correct for saving your work
+SAVE_PATH    = '/kaggle/working/landcover_best.pth'
 CKPT_DIR     = '/kaggle/working/landcover_ckpts'
+
+# ── Checkpoint Resume ────────────────────────────────────────────────
+# Auto-detects latest checkpoint in RESUME_CKPT_DIR.
+# • Default : CKPT_DIR (current session checkpoints, if they exist)
+# • Override: point at an uploaded Kaggle dataset containing .pth files
+# • Disable : set to None to always start from scratch
+RESUME_CKPT_DIR = '/kaggle/input/datasets/ayushks07/best-path'
 NUM_CLASSES   = 7
 EPOCHS        = 40
 # P100 16 GB VRAM (single GPU). DeepLabV3+ ResNet34 at 512×512 fp16 with
@@ -135,7 +142,28 @@ optimizer = torch.optim.AdamW(
 scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
     optimizer, T_0=10, T_mult=2
 )
-scaler = GradScaler()
+scaler = torch.amp.GradScaler('cuda')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Checkpoint helper
+# ─────────────────────────────────────────────────────────────────────────────
+def find_latest_landcover_checkpoint(ckpt_dir):
+    """Return path of the highest-epoch 'landcover_epoch*.pth' in ckpt_dir.
+    Returns None if directory doesn't exist or contains no matching files."""
+    import re
+    if not ckpt_dir or not os.path.isdir(ckpt_dir):
+        return None
+    pattern = re.compile(r'landcover_epoch(\d+)\.pth$')
+    candidates = []
+    for fname in os.listdir(ckpt_dir):
+        m = pattern.match(fname)
+        if m:
+            candidates.append((int(m.group(1)), os.path.join(ckpt_dir, fname)))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Metric helpers
@@ -179,15 +207,39 @@ def pixel_accuracy(conf):
 # ─────────────────────────────────────────────────────────────────────────────
 # Training loop
 # ─────────────────────────────────────────────────────────────────────────────
-best_miou      = 0.0
+best_miou         = 0.0
 epochs_no_improve = 0
+start_epoch       = 1
+
+# ── Auto-resume from latest checkpoint ──────────────────────────────────
+latest_ckpt = find_latest_landcover_checkpoint(RESUME_CKPT_DIR)
+if latest_ckpt:
+    print(f"\n📂 Auto-detected checkpoint: {latest_ckpt}")
+    ckpt = torch.load(latest_ckpt, map_location=device)
+    model.load_state_dict(ckpt['model_state_dict'])
+    optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+    scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+    best_miou         = ckpt.get('best_miou', 0.0)
+    epochs_no_improve = ckpt.get('epochs_no_improve', 0)
+    start_epoch       = ckpt['epoch'] + 1
+    # Restore class weights if saved (avoids re-scanning all masks)
+    if 'class_weights' in ckpt:
+        class_weights = ckpt['class_weights'].to(device)
+        ce_loss_fn    = nn.CrossEntropyLoss(weight=class_weights)
+    print(f"   ✅ Restored  : epoch {ckpt['epoch']} | best_mIoU={best_miou:.4f}")
+    print(f"   ⏳ Patience  : {epochs_no_improve}/{PATIENCE}")
+    print(f"   ⚡ LR        : {optimizer.param_groups[0]['lr']:.2e}")
+    print(f"   ▶️  Resuming from epoch {start_epoch}/{EPOCHS}\n")
+    del ckpt
+else:
+    print("📋 No checkpoint found — starting from scratch.\n")
 
 print(f"\n{'='*60}")
 print(f"  Training Land Cover (7-class) for {EPOCHS} epochs")
 print(f"  Batch={BATCH_SIZE} | LR={LR} | AMP=ON | Patience={PATIENCE}")
 print(f"{'='*60}\n")
 
-for epoch in range(1, EPOCHS + 1):
+for epoch in range(start_epoch, EPOCHS + 1):
     t0 = time.time()
 
     # ── Train ────────────────────────────────────────────────────────────────
@@ -204,7 +256,7 @@ for epoch in range(1, EPOCHS + 1):
 
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast():
+        with torch.amp.autocast('cuda'):
             logits = model(images)
             # logits: (B, 7, 512, 512)
             loss = combined_loss(logits, masks)
@@ -236,7 +288,7 @@ for epoch in range(1, EPOCHS + 1):
             images = images.to(device, non_blocking=True)
             masks  = masks.to(device, non_blocking=True).long()
 
-            with autocast():
+            with torch.amp.autocast('cuda'):
                 logits = model(images)
                 # logits: (B, 7, 512, 512)
                 loss   = combined_loss(logits, masks)
@@ -302,9 +354,15 @@ for epoch in range(1, EPOCHS + 1):
 
     if epoch % CKPT_EVERY == 0:
         ckpt_path = os.path.join(CKPT_DIR, f'landcover_epoch{epoch:03d}.pth')
-        torch.save({'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'miou': miou}, ckpt_path)
+        torch.save({
+            'epoch':                epoch,
+            'model_state_dict':     model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'best_miou':            best_miou,
+            'epochs_no_improve':    epochs_no_improve,
+            'class_weights':        class_weights.cpu(),
+        }, ckpt_path)
         print(f"  💾 Checkpoint saved: {ckpt_path}")
 
     # Early stopping
