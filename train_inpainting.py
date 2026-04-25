@@ -69,6 +69,14 @@ VAL_RATIO   = 0.20
 EARLY_STOP_PATIENCE = 8
 CHECKPOINT_EVERY    = 5
 
+# ── Checkpoint Resume ─────────────────────────────────────────────────────────
+# The script auto-detects the LATEST checkpoint in RESUME_CKPT_DIR.
+# • Default  : same as CKPT_DIR (working session, if checkpoints already exist)
+# • Override : point to a Kaggle dataset you uploaded the .pth files to, e.g.
+#              '/kaggle/input/inpainting-ckpts'
+# • Disable  : set to None to always start from scratch
+RESUME_CKPT_DIR = CKPT_DIR
+
 # Loss weights (must match InpaintingLoss defaults for clarity)
 LAMBDA_VALID = 1.0
 LAMBDA_HOLE  = 6.0
@@ -94,8 +102,29 @@ else:
 
 
 # =============================================================================
-# Section 3 ▸ Quick Metric Helper
+# Section 3 ▸ Helper Functions
 # =============================================================================
+
+def find_latest_checkpoint(ckpt_dir: str):
+    """
+    Scan *ckpt_dir* for files matching 'inpainting_ckpt_ep<NN>.pth' and
+    return the absolute path of the one with the HIGHEST epoch number.
+    Returns None if the directory doesn't exist or contains no checkpoints.
+    """
+    if not ckpt_dir or not os.path.isdir(ckpt_dir):
+        return None
+    import re
+    pattern = re.compile(r'inpainting_ckpt_ep(\d+)\.pth$')
+    candidates = []
+    for fname in os.listdir(ckpt_dir):
+        m = pattern.match(fname)
+        if m:
+            candidates.append((int(m.group(1)), os.path.join(ckpt_dir, fname)))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]   # path with highest epoch number
+
 
 def compute_hole_iou(pred_np:      np.ndarray,
                      target_np:    np.ndarray,
@@ -184,9 +213,44 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
         'val_total':   [], 'val_hole':   [],
         'val_iou':     [],
     }
+    start_epoch = 1
+
+    # ── 4f-2. Auto-resume from latest checkpoint ───────────────────────────
+    latest_ckpt = find_latest_checkpoint(RESUME_CKPT_DIR)
+    if latest_ckpt:
+        print(f"\n📂 Auto-detected checkpoint: {latest_ckpt}")
+        ckpt = torch.load(latest_ckpt, map_location=device)
+
+        model.load_state_dict(ckpt['model_state'])
+        optimizer.load_state_dict(ckpt['optim_state'])
+        best_val_hole = ckpt.get('best_val_hole', float('inf'))
+        history       = ckpt.get('history', history)
+        start_epoch   = ckpt['epoch'] + 1   # next epoch after the saved one
+
+        # Restore patience counter: count trailing epochs that didn't improve
+        val_holes = history.get('val_hole', [])
+        epochs_no_improve = 0
+        for vh in reversed(val_holes):
+            if vh <= best_val_hole + 1e-8:  # this was the best (or a best)
+                break
+            epochs_no_improve += 1
+
+        # Fast-forward ReduceLROnPlateau using the stored val_hole history
+        # so the LR schedule continues exactly from where it left off.
+        for vh in val_holes:
+            scheduler.step(vh)
+
+        print(f"   ✅ Restored  : epoch {ckpt['epoch']} | best_val_hole={best_val_hole:.4f}")
+        print(f"   ⏳ Patience  : {epochs_no_improve}/{EARLY_STOP_PATIENCE}")
+        print(f"   ⚡ LR        : {optimizer.param_groups[0]['lr']:.2e}")
+        print(f"   ▶️  Resuming from epoch {start_epoch}/{epochs}\n")
+        del ckpt
+        gc.collect()
+    else:
+        print("📋 No checkpoint found — starting from scratch.\n")
 
     # ── 4g. Epoch Loop ────────────────────────────────────────────────────────
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
 
         # ── Train Phase ───────────────────────────────────────────────────────
         model.train()
