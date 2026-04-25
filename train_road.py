@@ -1,31 +1,20 @@
 # =============================================================================
-# train_road.py  –  Road Extraction Training Script (Kaggle T4 ×2)
+# train_road.py  –  Road Extraction Training Script (Kaggle P100)
 # =============================================================================
-# KEY CHANGES vs v1:
-#   • BUG FIX: imports DeepGlobeRoadDataset (was 'RoadDataset' — class never existed)
-#   • 80/20 train/val split via get_road_splits() from dataset.py
-#   • Combined loss: 0.5 * FocalLoss + 0.5 * DiceLoss
-#       – FocalLoss handles severe class imbalance (few road pixels)
-#       – DiceLoss penalises thin-road misses that FocalLoss alone overlooks
-#   • CosineAnnealingLR scheduler (T_max = num_epochs)
-#   • Mixed-precision training via torch.cuda.amp (GradScaler + autocast)
-#       – Halves VRAM usage, ~40% speedup on T4
-#   • Gradient clipping (max_norm=1.0) prevents exploding gradients
-#   • Saves best model based on VAL loss (not train loss)
-#   • Early stopping (patience=5)
-#   • Checkpoint every 5 epochs saved to /kaggle/working/road_ckpts/
-#   • torch.cuda.empty_cache() between epochs to prevent OOM
-#   • pin_memory=True, num_workers=2 for Kaggle DataLoader (OOM fix)
-#   • tqdm progress bars with live loss display
-#   • Epoch-end IoU + Dice printout from val loop
-#   • nn.DataParallel for T4 ×2 (30 GB total VRAM)
+# Architecture : DeepLabV3+ ResNet34  (encoder_output_stride=16)
+# Loss         : 0.5 * FocalLoss  +  0.5 * DiceLoss
+# Optimizer    : Adam  lr=1e-4
+# Scheduler    : CosineAnnealingLR  T_max=num_epochs
+# Epochs       : 35  |  Early stopping patience=5  (val loss)
+# Precision    : Mixed (torch.cuda.amp  GradScaler + autocast)
+# Environment  : Kaggle P100  (16 GB VRAM, single GPU, 30 GB RAM)
 #
-# OOM FIXES applied (v2):
-#   • BATCH_SIZE reduced 16 → 8  (8 samples total, 4 per GPU — safe headroom)
-#   • num_workers reduced 4 → 2  (fewer shared-mem copies of 512×512 batches)
-#   • Val IoU/Dice now computed INCREMENTALLY per-batch (no full-set np.concat)
-#   • Intermediate tensors (outputs, preds_np) explicitly deleted after use
-#   • torch.cuda.reset_peak_memory_stats() called each epoch for clean logging
+# P100 vs T4×2 rationale:
+#   • Single GPU  → no DataParallel/DDP overhead, no NCCL buffers
+#   • Flat RAM profile: baseline ~15 GB vs T4×2 ~24–28 GB  (much more headroom)
+#   • BATCH_SIZE=12  (safe at 512×512 fp16; T4×2 was capped at 8 due to DP overhead)
+#   • num_workers=0, pin_memory=False  (RAM headroom first, speed second)
+#   • malloc_trim(0) + gc.collect() after every epoch prevents heap creep
 # =============================================================================
 
 import os
@@ -88,12 +77,12 @@ LOCAL_BEST = '/kaggle/working/road_model_best.pth'
 CKPT_DIR   = '/kaggle/working/road_ckpts'
 os.makedirs(CKPT_DIR, exist_ok=True)
 
-# ── OOM FIX #1: Reduced batch size ───────────────────────────────────────────
-# DeepLabV3+ ResNet34 at 512×512 with ASPP holds ~1.5 GB of activations per
-# sample in fp16. At batch=16 (8 per GPU) that is 12 GB of activations alone,
-# leaving very little headroom for gradients and the optimizer states.
-# batch=8 (4 per GPU) gives comfortable headroom on both T4 cards.
-BATCH_SIZE = 8
+# ── Batch size ────────────────────────────────────────────────────────────────
+# P100 has 16 GB VRAM (single GPU). DeepLabV3+ ResNet34 at 512×512 fp16
+# uses ~1.5 GB activations per sample. Batch=12 → ~18 GB activations in fp16,
+# which fits comfortably with optimizer states + gradients in 16 GB.
+# We keep num_workers=0 to preserve RAM headroom (each worker costs ~1.5 GB).
+BATCH_SIZE = 12
 
 NUM_EPOCHS          = 35
 LR                  = 1e-4
@@ -103,27 +92,22 @@ CHECKPOINT_EVERY    = 5
 
 
 # =============================================================================
-# Section 2 ▸ GPU / Multi-GPU Setup
+# Section 2 ▸ GPU Setup  (P100 — single GPU)
 # =============================================================================
 
-device        = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-n_gpus        = torch.cuda.device_count()
-USE_MULTI_GPU = n_gpus > 1
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # ── cuDNN memory control ──────────────────────────────────────────────────────
 # benchmark=False : cuDNN picks a deterministic algorithm on first call and
 #   reuses it forever.  benchmark=True (the default) probes EVERY convolution
 #   shape variant it encounters and caches the fastest algorithm in RAM.
-#   With 35 epochs × 622 batches this cache grows continuously and is a
-#   primary source of the 24 GB → 30 GB RAM creep seen in training.
-torch.backends.cudnn.benchmark   = False
+#   With 35 epochs × many batches this cache grows continuously.
+torch.backends.cudnn.benchmark    = False
 torch.backends.cudnn.deterministic = True
 
 if torch.cuda.is_available():
-    for i in range(n_gpus):
-        props = torch.cuda.get_device_properties(i)
-        print(f"🖥️  GPU {i}: {props.name}  VRAM={props.total_memory/1e9:.1f} GB")
-    print(f"   DataParallel: {'YES (×' + str(n_gpus) + ')' if USE_MULTI_GPU else 'NO (single GPU)'}")
+    props = torch.cuda.get_device_properties(0)
+    print(f"🖥️  GPU: {props.name}  VRAM={props.total_memory/1e9:.1f} GB")
 else:
     print("⚠️  No GPU detected — running on CPU (will be slow!)")
 
@@ -190,12 +174,9 @@ def train_road(epochs: int = NUM_EPOCHS):
     print(f"   Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
     print(f"   Epochs: {epochs} | Batch size: {BATCH_SIZE} | LR: {LR}\n")
 
-    # ── 4b. Model  +  DataParallel ────────────────────────────────────────────
+    # ── 4b. Model  (single GPU — P100) ───────────────────────────────────────
     model = get_road_model().to(device)
     print(f"🩺 RAM after model   : {_ram_gb():.2f} GB")
-    if USE_MULTI_GPU:
-        model = nn.DataParallel(model)
-        print(f"   Model wrapped in DataParallel across {n_gpus} GPUs")
 
     # ── 4c. Combined Loss ─────────────────────────────────────────────────────
     focal_loss = smp.losses.FocalLoss(mode='binary')
@@ -205,9 +186,8 @@ def train_road(epochs: int = NUM_EPOCHS):
         return 0.5 * focal_loss(logits, targets) + 0.5 * dice_loss(logits, targets)
 
     # ── 4d. Optimiser + Scheduler ─────────────────────────────────────────────
-    base_model = model.module if USE_MULTI_GPU else model
-    optimizer  = optim.Adam(base_model.parameters(), lr=LR)
-    scheduler  = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     # ── 4e. AMP Scaler ────────────────────────────────────────────────────────
     scaler = GradScaler()
@@ -311,8 +291,7 @@ def train_road(epochs: int = NUM_EPOCHS):
         if avg_val_loss < best_val_loss:
             best_val_loss     = avg_val_loss
             epochs_no_improve = 0
-            state = (model.module if USE_MULTI_GPU else model).state_dict()
-            torch.save(state, LOCAL_BEST)
+            torch.save(model.state_dict(), LOCAL_BEST)
             print(f"   🌟 New best val_loss={best_val_loss:.4f} → saved to {LOCAL_BEST}")
         else:
             epochs_no_improve += 1
@@ -321,10 +300,9 @@ def train_road(epochs: int = NUM_EPOCHS):
         # ── Periodic Backup Checkpoint ────────────────────────────────────────
         if epoch % CHECKPOINT_EVERY == 0:
             ckpt_path = os.path.join(CKPT_DIR, f'road_ckpt_ep{epoch:02d}.pth')
-            state = (model.module if USE_MULTI_GPU else model).state_dict()
             torch.save({
                 'epoch':         epoch,
-                'model_state':   state,
+                'model_state':   model.state_dict(),
                 'optim_state':   optimizer.state_dict(),
                 'best_val_loss': best_val_loss,
                 'history':       history,

@@ -1,5 +1,5 @@
 # =============================================================================
-# train_building.py  –  Stage 4: Building Footprint Detection (DDP, T4 ×2)
+# train_building.py  –  Stage 4: Building Footprint Detection (P100)
 # =============================================================================
 # Architecture : UnetPlusPlus ResNet50 + scse attention
 # Loss         : 0.35 * FocalLoss + 0.35 * DiceLoss
@@ -7,23 +7,24 @@
 # Optimizer    : AdamW  lr=1e-4  wd=1e-4
 # Scheduler    : OneCycleLR  max_lr=3e-4  epochs=50
 # Epochs       : 50   |  Early stopping patience: 8 (based on val IoU)
-# Resolution   : 640×640 (exploits 30GB total VRAM on T4 ×2)
+# Resolution   : 640×640
 # Precision    : Mixed (torch.cuda.amp) mandatory
-# Multi-GPU    : DistributedDataParallel (DDP) via mp.spawn
-#                — avoids DataParallel's VRAM imbalance and master-GPU bottleneck
-#                — each GPU runs its own backward pass; gradients all-reduced
-# Environment  : Kaggle T4 ×2  |  /kaggle/input/  |  /kaggle/working/
+# Environment  : Kaggle P100  (16 GB VRAM, single GPU, 30 GB RAM)
+#
+# P100 vs T4×2 DDP rationale:
+#   • DDP removed — no mp.spawn, no NCCL buffers, no dist.all_reduce overhead
+#   • BATCH_SIZE=8 at 640×640 fp16: ~2.5 GB activations, fits P100 easily
+#   • num_workers=0, pin_memory=False: RAM headroom over throughput
+#   • OneCycleLR steps per batch (not per epoch) — unchanged from DDP version
 # =============================================================================
 
 import os
+import gc
+import ctypes
 import time
 import torch
 import torch.nn as nn
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
@@ -47,19 +48,35 @@ CKPT_DIR     = '/kaggle/working/building_ckpts'
 os.makedirs(CKPT_DIR, exist_ok=True)
 
 # Hyperparameters
-BATCH_SIZE   = 32        # 16 per GPU with DDP — 640×640 fp16 fits comfortably
-NUM_EPOCHS   = 50        # Kaggle 9hr session handles ~50 epochs at this size
+# 640×640 fp16 with UnetPlusPlus ResNet50: ~2.5 GB activations per sample.
+# Batch=8 → ~20 GB in fp16 — fits P100's 16 GB VRAM comfortably with AMP.
+BATCH_SIZE   = 8
+NUM_EPOCHS   = 50
 LR           = 1e-4
 MAX_LR       = 3e-4      # OneCycleLR peak
 WEIGHT_DECAY = 1e-4
 VAL_RATIO    = 0.2
 PATIENCE     = 8         # early stopping on val IoU
 CKPT_EVERY   = 5
-NUM_WORKERS  = 4         # 2 per GPU — Kaggle has ample CPU cores
+# num_workers=0: P100 environment has the same 30 GB RAM limit as T4×2.
+# Each worker costs ~1.5 GB; keeping 0 gives ~14 GB of training headroom.
+NUM_WORKERS  = 0
 
 
 # =============================================================================
-# Section 2 ▸ Loss Functions
+# Section 2 ▸ Memory Helpers
+# =============================================================================
+
+def _trim_heap():
+    """Force glibc to return free heap pages to the OS (Linux/Kaggle only)."""
+    try:
+        ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except Exception:
+        pass  # silently skip on Windows dev machines
+
+
+# =============================================================================
+# Section 3 ▸ Loss Functions
 # =============================================================================
 
 class BoundaryLoss(nn.Module):
@@ -163,7 +180,7 @@ def compute_total_loss(logits:     torch.Tensor,
 
 
 # =============================================================================
-# Section 3 ▸ Metric Helper
+# Section 4 ▸ Metric Helper
 # =============================================================================
 
 def compute_iou_batch(logits: torch.Tensor,
@@ -186,123 +203,93 @@ def compute_iou_batch(logits: torch.Tensor,
 
 
 # =============================================================================
-# Section 4 ▸ DDP Training Function (runs per GPU process)
+# Section 5 ▸ GPU Setup  (P100 — single GPU)
 # =============================================================================
 
-def train_fn(rank: int, world_size: int):
-    """
-    Per-GPU training process.
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    rank=0 : master process — handles logging, printing, checkpoint saving
-    rank=1 : worker process — mirrors rank=0's computation
+# cuDNN: disable benchmark mode to prevent RAM creep from algo-probe caching
+torch.backends.cudnn.benchmark    = False
+torch.backends.cudnn.deterministic = True
 
-    DDP flow per step:
-        1. Each GPU loads its own shard of the batch (via DistributedSampler)
-        2. Forward + loss computed independently on each GPU
-        3. loss.backward() triggers all-reduce: gradients averaged across GPUs
-        4. optimizer.step() updates weights identically on both GPUs
+if torch.cuda.is_available():
+    props = torch.cuda.get_device_properties(0)
+    print(f"🖥️  GPU: {props.name}  VRAM={props.total_memory/1e9:.1f} GB")
+    print(f"   AMP (fp16) ENABLED")
+else:
+    print("⚠️  No GPU detected — running on CPU (will be slow!)")
 
-    Args:
-        rank       : GPU index (0 or 1)
-        world_size : total number of GPUs (2)
-    """
-    # ── 4a. Init process group ────────────────────────────────────────────────
-    dist.init_process_group(
-        backend="nccl",          # NCCL = optimised for GPU-GPU communication
-        init_method="env://",    # uses MASTER_ADDR / MASTER_PORT env vars
-        world_size=world_size,
-        rank=rank,
-    )
-    torch.cuda.set_device(rank)
-    device = torch.device(f"cuda:{rank}")
 
-    is_master = (rank == 0)   # only master logs and saves
+# =============================================================================
+# Section 6 ▸ Main Training Function
+# =============================================================================
 
-    # ── 4b. Data ──────────────────────────────────────────────────────────────
+def train_building(epochs: int = NUM_EPOCHS):
+    # ── 6a. Data ──────────────────────────────────────────────────────────────
     train_ds, val_ds = get_building_splits(IMAGE_DIR, MASK_DIR,
                                            val_ratio=VAL_RATIO)
 
-    # DistributedSampler partitions the dataset across GPUs.
-    # train_sampler.set_epoch(epoch) is CRITICAL — without it, all epochs
-    # would use the same shuffle, destroying the benefit of shuffling.
-    train_sampler = DistributedSampler(
-        train_ds, num_replicas=world_size, rank=rank, shuffle=True)
-    val_sampler   = DistributedSampler(
-        val_ds,   num_replicas=world_size, rank=rank, shuffle=False)
-
-    # batch_size here is PER DATALOADER (i.e. global batch / world_size).
-    # With world_size=2 and BATCH_SIZE=32, each GPU sees 16 samples per step.
     train_loader = DataLoader(
         train_ds,
-        batch_size=BATCH_SIZE // world_size,
-        sampler=train_sampler,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
         num_workers=NUM_WORKERS,
-        pin_memory=True,
+        pin_memory=False,
         drop_last=True,
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=BATCH_SIZE // world_size,
-        sampler=val_sampler,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
         num_workers=NUM_WORKERS,
-        pin_memory=True,
+        pin_memory=False,
     )
 
-    if is_master:
-        print(f"\n🚀 Building Detection | DDP Training | {world_size} GPUs")
-        print(f"   Global batch={BATCH_SIZE} ({BATCH_SIZE//world_size} per GPU) | "
-              f"Resolution=640×640 | Epochs={NUM_EPOCHS}")
-        print(f"   Train samples={len(train_ds)} | Val samples={len(val_ds)}\n")
+    print(f"\n🚀 Building Detection | P100 Single-GPU Training")
+    print(f"   Batch={BATCH_SIZE} | Resolution=640×640 | Epochs={epochs}")
+    print(f"   Train samples={len(train_ds)} | Val samples={len(val_ds)}\n")
 
-    # ── 4c. Model + DDP ───────────────────────────────────────────────────────
+    # ── 6b. Model ─────────────────────────────────────────────────────────────
     model = get_building_model().to(device)
-    # DDP wraps the model for gradient synchronisation.
-    # find_unused_parameters=False: all model parameters are used in every
-    # forward pass (no dynamic graph branching) — faster than True.
-    model = DDP(model, device_ids=[rank], find_unused_parameters=False)
 
-    # ── 4d. Loss functions ────────────────────────────────────────────────────
+    # ── 6c. Loss functions ────────────────────────────────────────────────────
     focal, dice, boundary, soft_dist = build_loss_fns(device)
 
-    # ── 4e. Optimizer + Scheduler ─────────────────────────────────────────────
-    # Access model.module.parameters() to get base model params (not DDP wrapper)
-    optimizer = AdamW(model.module.parameters(),
-                      lr=LR, weight_decay=WEIGHT_DECAY)
+    # ── 6d. Optimizer + Scheduler ─────────────────────────────────────────────
+    optimizer = AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
     # OneCycleLR: warms up LR from LR→max_lr over first 30% of training,
-    # then anneals to LR/10. Outperforms CosineAnnealing for most vision tasks
-    # because the warmup phase prevents overshooting in early epochs.
+    # then anneals to LR/10. Steps per BATCH (not per epoch).
     scheduler = OneCycleLR(
         optimizer,
         max_lr=MAX_LR,
-        epochs=NUM_EPOCHS,
+        epochs=epochs,
         steps_per_epoch=len(train_loader),
         pct_start=0.3,
         anneal_strategy='cos',
     )
 
-    scaler = GradScaler()   # GradScaler is per-process in DDP (not shared)
+    scaler = GradScaler()
 
-    # ── 4f. Training state ────────────────────────────────────────────────────
+    # ── 6e. Training state ────────────────────────────────────────────────────
     best_iou          = 0.0
     epochs_no_improve = 0
+    history = {'train_loss': [], 'val_loss': [], 'val_iou': []}
 
-    # ── 4g. Epoch loop ────────────────────────────────────────────────────────
-    for epoch in range(1, NUM_EPOCHS + 1):
+    # ── 6f. Epoch loop ────────────────────────────────────────────────────────
+    for epoch in range(1, epochs + 1):
         t0 = time.time()
-
-        # CRITICAL: set_epoch ensures different shuffle each epoch across GPUs
-        train_sampler.set_epoch(epoch)
+        torch.cuda.reset_peak_memory_stats()
 
         # ── Train ─────────────────────────────────────────────────────────────
         model.train()
         train_loss = 0.0
 
-        for images, masks, edge_masks, dist_maps in tqdm(
-                train_loader,
-                desc=f"[GPU{rank}] Epoch {epoch:02d}/{NUM_EPOCHS} [Train]",
-                disable=(not is_master)):  # only rank=0 shows the bar
+        train_bar = tqdm(train_loader,
+                         desc=f"Epoch {epoch:02d}/{epochs} [Train]",
+                         unit='batch', leave=False)
 
+        for images, masks, edge_masks, dist_maps in train_bar:
             # images:     (B, 3, 640, 640) float32
             # masks:      (B, 640, 640)    float32 — unsqueeze below
             # edge_masks: (B, 640, 640)    float32 — unsqueeze below
@@ -322,14 +309,14 @@ def train_fn(rank: int, world_size: int):
                 )
 
             scaler.scale(loss).backward()
-            # Unscale before clip so clip operates in true gradient space
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
-            scheduler.step()   # OneCycleLR steps per BATCH, not per epoch
+            scheduler.step()   # OneCycleLR steps per BATCH
 
             train_loss += loss.item()
+            train_bar.set_postfix(loss=f"{loss.item():.4f}")
 
             del images, masks, edge_masks, dist_maps, logits, loss
 
@@ -342,12 +329,12 @@ def train_fn(rank: int, world_size: int):
         iou_sum        = 0.0
         n_batches      = 0
 
-        with torch.no_grad():
-            for images, masks, edge_masks, dist_maps in tqdm(
-                    val_loader,
-                    desc=f"[GPU{rank}] Epoch {epoch:02d}/{NUM_EPOCHS} [Val]  ",
-                    disable=(not is_master)):
+        val_bar = tqdm(val_loader,
+                       desc=f"Epoch {epoch:02d}/{epochs} [Val]  ",
+                       unit='batch', leave=False)
 
+        with torch.no_grad():
+            for images, masks, edge_masks, dist_maps in val_bar:
                 images     = images.to(device, non_blocking=True)
                 masks      = masks.to(device, non_blocking=True).unsqueeze(1)
                 edge_masks = edge_masks.to(device, non_blocking=True).unsqueeze(1)
@@ -367,115 +354,75 @@ def train_fn(rank: int, world_size: int):
                 del images, masks, edge_masks, dist_maps, logits, val_loss
 
         avg_val_loss = val_loss_accum / max(n_batches, 1)
-        local_iou    = iou_sum / max(n_batches, 1)
+        val_iou      = iou_sum / max(n_batches, 1)
 
-        # ── Sync IoU across GPUs via all_reduce ───────────────────────────────
-        # Each GPU computed IoU on its own shard; average across all processes.
-        iou_tensor = torch.tensor([local_iou], device=device)
-        dist.all_reduce(iou_tensor, op=dist.ReduceOp.AVG)
-        val_iou = iou_tensor.item()
+        elapsed    = time.time() - t0
+        mem_alloc  = torch.cuda.memory_allocated() / 1e9 if device.type == 'cuda' else 0.0
+        mem_peak   = torch.cuda.max_memory_allocated() / 1e9 if device.type == 'cuda' else 0.0
 
-        # dist.barrier() ensures all GPUs finish val before any saves/prints
-        dist.barrier()
+        # ── Log ───────────────────────────────────────────────────────────────
+        history['train_loss'].append(avg_train_loss)
+        history['val_loss'].append(avg_val_loss)
+        history['val_iou'].append(val_iou)
+
+        print(
+            f"Epoch {epoch:02d}/{epochs} | "
+            f"Train: {avg_train_loss:.4f} | "
+            f"Val: {avg_val_loss:.4f} | "
+            f"IoU: {val_iou:.4f} | "
+            f"LR: {scheduler.get_last_lr()[0]:.2e} | "
+            f"Time: {elapsed:.1f}s | "
+            f"GPU alloc={mem_alloc:.1f}GB peak={mem_peak:.1f}GB"
+        )
+
+        # ── Best model checkpoint ──────────────────────────────────────────────
+        if val_iou > best_iou:
+            best_iou          = val_iou
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), BEST_CKPT)
+            print(f"   🌟 New best IoU={best_iou:.4f} → {BEST_CKPT}")
+        else:
+            epochs_no_improve += 1
+            print(f"   ⏳ No improvement ({epochs_no_improve}/{PATIENCE})")
+
+        # ── Periodic backup checkpoint ─────────────────────────────────────────
+        if epoch % CKPT_EVERY == 0:
+            ckpt_path = os.path.join(CKPT_DIR, f'building_ckpt_ep{epoch:02d}.pth')
+            torch.save({
+                'epoch':      epoch,
+                'model_state': model.state_dict(),
+                'optim_state': optimizer.state_dict(),
+                'best_iou':   best_iou,
+                'history':    history,
+            }, ckpt_path)
+            print(f"   💾 Backup → {ckpt_path}")
+
+        # ── End-of-epoch memory hygiene ────────────────────────────────────────
         torch.cuda.empty_cache()
+        gc.collect()
+        _trim_heap()
 
-        elapsed = time.time() - t0
-
-        # ── Logging and checkpointing (rank=0 only) ───────────────────────────
-        if is_master:
-            # GPU memory report for both cards
-            for i in range(torch.cuda.device_count()):
-                allocated = torch.cuda.memory_allocated(i) / 1e9
-                reserved  = torch.cuda.memory_reserved(i) / 1e9
-                print(f"   GPU {i}: {allocated:.2f} GB alloc / "
-                      f"{reserved:.2f} GB reserved")
-
-            print(
-                f"Epoch {epoch:02d}/{NUM_EPOCHS} | "
-                f"Train Loss: {avg_train_loss:.4f} | "
-                f"Val Loss: {avg_val_loss:.4f} | "
-                f"Val IoU: {val_iou:.4f} | "
-                f"LR: {scheduler.get_last_lr()[0]:.2e} | "
-                f"Time: {elapsed:.1f}s"
-            )
-
-            # Best model checkpoint
-            if val_iou > best_iou:
-                best_iou          = val_iou
-                epochs_no_improve = 0
-                # model.module.state_dict() — unwrap DDP before saving
-                # so checkpoint is portable on any hardware (no DDP required
-                # to load it for inference or fine-tuning)
-                torch.save(model.module.state_dict(), BEST_CKPT)
-                print(f"   🌟 New best IoU={best_iou:.4f} → {BEST_CKPT}")
-            else:
-                epochs_no_improve += 1
-                print(f"   ⏳ No improvement ({epochs_no_improve}/{PATIENCE})")
-
-            # Periodic backup checkpoint
-            if epoch % CKPT_EVERY == 0:
-                ckpt_path = os.path.join(CKPT_DIR,
-                                         f'building_ckpt_ep{epoch:02d}.pth')
-                torch.save({
-                    'epoch':      epoch,
-                    'model_state': model.module.state_dict(),
-                    'optim_state': optimizer.state_dict(),
-                    'best_iou':   best_iou,
-                }, ckpt_path)
-                print(f"   💾 Backup → {ckpt_path}")
-
-        # Barrier: make sure rank=0 finishes saving before rank=1 continues
-        dist.barrier()
-
-        # Early stopping — rank=0 decides; result broadcast implicitly via
-        # barrier on next epoch (all ranks exit the loop together since
-        # epochs_no_improve is only meaningful at rank=0, but all ranks
-        # increment the epoch counter identically)
+        # ── Early stopping ─────────────────────────────────────────────────────
         if epochs_no_improve >= PATIENCE:
-            if is_master:
-                print(f"\n🛑 Early stopping at epoch {epoch} "
-                      f"(no val IoU improvement for {PATIENCE} epochs).")
+            print(f"\n🛑 Early stopping at epoch {epoch} "
+                  f"(no val IoU improvement for {PATIENCE} epochs).")
             break
 
-    # ── Cleanup ───────────────────────────────────────────────────────────────
-    dist.destroy_process_group()
+    # ── Final Summary ──────────────────────────────────────────────────────────
+    print("\n" + "=" * 55)
+    print("          BUILDING TRAINING COMPLETE")
+    print("=" * 55)
+    print(f"  Best Val IoU  : {best_iou:.4f}")
+    print(f"  Best model    : {BEST_CKPT}")
+    print(f"  Checkpoints   : {CKPT_DIR}/")
+    print("=" * 55)
 
-    if is_master:
-        print(f"\n🏁 Training complete. Best val IoU = {best_iou:.4f}")
-        print(f"   Best model: {BEST_CKPT}")
-        print(f"   Checkpoints: {CKPT_DIR}/")
+    return history
 
 
 # =============================================================================
-# Section 5 ▸ Entry Point — DDP Launch via mp.spawn
+# Section 7 ▸ Entry Point
 # =============================================================================
-
-def main():
-    """
-    Launch DDP training across all available GPUs.
-
-    mp.spawn creates world_size processes, each running train_fn(rank, world_size).
-    MASTER_ADDR + MASTER_PORT must be set before spawn for NCCL rendezvous.
-    """
-    # NCCL rendezvous: all processes meet at localhost:12355 to exchange
-    # initial communication info before training begins.
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-
-    world_size = torch.cuda.device_count()
-    if world_size < 1:
-        raise RuntimeError("No GPUs detected — cannot run DDP training.")
-
-    print(f"🖥  Detected {world_size} GPU(s):")
-    for i in range(world_size):
-        props = torch.cuda.get_device_properties(i)
-        print(f"   GPU {i}: {props.name}  VRAM={props.total_memory/1e9:.1f} GB")
-    print(f"   Launching DDP on {world_size} GPU(s)\n")
-
-    # nprocs=world_size: one Python process per GPU
-    # join=True: main() blocks until all processes finish
-    mp.spawn(train_fn, args=(world_size,), nprocs=world_size, join=True)
-
 
 if __name__ == '__main__':
-    main()
+    history = train_building(epochs=NUM_EPOCHS)

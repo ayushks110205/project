@@ -7,9 +7,10 @@
 # Scheduler    : CosineAnnealingWarmRestarts  T0=10  T_mult=2
 # Epochs       : 40   |  Early stopping patience: 7  (based on val mIoU)
 # Precision    : Mixed (torch.cuda.amp)  mandatory
-# Environment  : Kaggle  T4 ×2  (30 GB total VRAM)
-#                • nn.DataParallel distributes batches across both GPUs
-#                • batch_size=16 (double vs single-GPU)
+# Environment  : Kaggle P100  (16 GB VRAM, single GPU, 30 GB RAM)
+#                • Single GPU — no DataParallel overhead
+#                • BATCH_SIZE=16 fits comfortably on 16 GB P100 at 512×512 fp16
+#                • num_workers=0, pin_memory=False for RAM stability
 #                • Dataset at /kaggle/input/, outputs to /kaggle/working/
 # =============================================================================
 
@@ -43,29 +44,33 @@ SAVE_PATH    = '/kaggle/working/landcover_model_latest.pth'
 CKPT_DIR     = '/kaggle/working/landcover_ckpts'
 NUM_CLASSES   = 7
 EPOCHS        = 40
-# T4 ×2 = 30 GB total VRAM. batch_size=16 distributes 8 samples per GPU
-# with stride-16 encoder + AMP — safe headroom for both cards.
+# P100 16 GB VRAM (single GPU). DeepLabV3+ ResNet34 at 512×512 fp16 with
+# 7-class head uses ~1.2 GB activations per sample. Batch=16 → ~19 GB,
+# which sits comfortably within 16 GB with AMP halving tensor sizes.
 BATCH_SIZE    = 16
 LR            = 2e-4
 WEIGHT_DECAY  = 1e-4
 PATIENCE      = 7
 CKPT_EVERY    = 5
-NUM_WORKERS   = 4   # Kaggle has more CPU cores than Colab free tier
-PIN_MEMORY    = True
+# num_workers=0: each worker spawns a full Python process (~1.5 GB RAM).
+# With P100’s ~15 GB RAM baseline, keeping workers=0 is the safe choice.
+NUM_WORKERS   = 0
+PIN_MEMORY    = False   # only useful with workers > 0
 
 CLASS_NAMES = DeepGlobeLandCoverDataset.CLASS_NAMES
 os.makedirs(CKPT_DIR, exist_ok=True)
 
-# ── Multi-GPU detection ─────────────────────────────────────────────────────────
-device   = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-n_gpus   = torch.cuda.device_count()
-USE_MULTI_GPU = n_gpus > 1
+# ── Single-GPU setup (P100) ─────────────────────────────────────────────────────
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# cuDNN: deterministic mode prevents algorithm-probe caching from leaking RAM
+torch.backends.cudnn.benchmark    = False
+torch.backends.cudnn.deterministic = True
 
 print(f"🖥  Device: {device}")
 if device.type == 'cuda':
-    for i in range(n_gpus):
-        print(f"   GPU {i}: {torch.cuda.get_device_name(i)}")
-    print(f"   DataParallel: {'YES (×' + str(n_gpus) + ')' if USE_MULTI_GPU else 'NO (single GPU)'}")
+    props = torch.cuda.get_device_properties(0)
+    print(f"   GPU: {props.name}  VRAM={props.total_memory/1e9:.1f} GB")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data
@@ -89,18 +94,11 @@ class_weights = train_ds.get_class_weights().to(device)
 # class_weights: (7,) float32  — higher for rarer classes
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Model  +  DataParallel
+# Model  (single GPU — P100)
 # ─────────────────────────────────────────────────────────────────────────────
 model = get_landcover_model().to(device)
 # model input:  (B, 3, 512, 512)  float32
 # model output: (B, 7, 512, 512)  float32  raw logits
-
-if USE_MULTI_GPU:
-    # DataParallel splits the batch across all available GPUs along dim=0.
-    # Each GPU receives (B/n_gpus, 3, 512, 512) and gradients are summed.
-    # NOTE: access real weights via model.module.* when saving.
-    model = nn.DataParallel(model)
-    print(f"   Model wrapped in DataParallel across {n_gpus} GPUs")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Loss functions
@@ -129,11 +127,8 @@ def combined_loss(logits, targets):
 # ─────────────────────────────────────────────────────────────────────────────
 # Optimizer & Scheduler
 # ─────────────────────────────────────────────────────────────────────────────
-# Optimizer takes parameters from the underlying module (DataParallel.module)
-# to ensure weight decay applies to the real weights, not the wrapper.
-base_model = model.module if USE_MULTI_GPU else model
-optimizer  = torch.optim.AdamW(
-    base_model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY
+optimizer = torch.optim.AdamW(
+    model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY
 )
 # CosineAnnealingWarmRestarts: periodic LR resets help escape local minima
 # in multi-class loss landscapes; T_mult=2 doubles the period after each restart.
@@ -292,12 +287,9 @@ for epoch in range(1, EPOCHS + 1):
     if miou > best_miou:
         best_miou = miou
         epochs_no_improve = 0
-        # Unwrap DataParallel before saving so the checkpoint is
-        # loadable on any single-GPU or CPU machine.
-        state = (model.module if USE_MULTI_GPU else model).state_dict()
         torch.save({
             'epoch': epoch,
-            'model_state_dict': state,
+            'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
             'best_miou': best_miou,
@@ -310,9 +302,8 @@ for epoch in range(1, EPOCHS + 1):
 
     if epoch % CKPT_EVERY == 0:
         ckpt_path = os.path.join(CKPT_DIR, f'landcover_epoch{epoch:03d}.pth')
-        state = (model.module if USE_MULTI_GPU else model).state_dict()
         torch.save({'epoch': epoch,
-                    'model_state_dict': state,
+                    'model_state_dict': model.state_dict(),
                     'miou': miou}, ckpt_path)
         print(f"  💾 Checkpoint saved: {ckpt_path}")
 

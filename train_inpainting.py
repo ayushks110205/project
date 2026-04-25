@@ -2,7 +2,7 @@
 # train_inpainting.py  –  Stage 2 Road Mask Inpainting Training Loop
 # =============================================================================
 #
-# ┌─────────────────────────────────────────────────────────────────────────┐
+# ┌─────────────────────────────────────────────────────────────────────────────┐
 # │  TWO-STAGE PIPELINE OVERVIEW                                            │
 # │                                                                         │
 # │  STAGE 1: Satellite Image  →  Road Mask                                 │
@@ -17,19 +17,22 @@
 # │                                                                         │
 # │  INFERENCE: Run Stage 1 first, pipe its output into Stage 2             │
 # │             (see pipeline.py for the chained inference wrapper)         │
-# └─────────────────────────────────────────────────────────────────────────┘
+# └─────────────────────────────────────────────────────────────────────────────┘
 #
-# Training setup (Kaggle T4 ×2):
-#   • Batch size   : 8   (smaller than Stage 1 — partial conv is VRAM-heavy)
-#   • AMP          : torch.cuda.amp GradScaler + autocast  (mandatory for T4)
+# Training setup (Kaggle P100 — single GPU, 16 GB VRAM):
+#   • Batch size   : 8   (partial conv U-Net is VRAM-heavy at 512×512)
+#   • AMP          : torch.cuda.amp GradScaler + autocast
 #   • Optimizer    : Adam lr=2e-4, weight_decay=1e-5
 #   • Scheduler    : ReduceLROnPlateau(patience=4, factor=0.5)
 #   • Gradient clip: max_norm=1.0
 #   • Early stop   : patience=8 epochs on val L_hole
 #   • Checkpoints  : every 5 epochs → /kaggle/working/inpainting_ckpts/
+#   • num_workers=0, pin_memory=False for RAM stability
 # =============================================================================
 
 import os
+import gc
+import ctypes
 import torch
 import torch.optim as optim
 import numpy as np
@@ -137,11 +140,11 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
 
     train_loader = DataLoader(
         train_ds, batch_size=BATCH_SIZE, shuffle=True,
-        num_workers=4, pin_memory=True, drop_last=True
+        num_workers=0, pin_memory=False, drop_last=True
     )
     val_loader = DataLoader(
         val_ds, batch_size=BATCH_SIZE, shuffle=False,
-        num_workers=4, pin_memory=True
+        num_workers=0, pin_memory=False
     )
 
     print(f"🚀 Stage 2 Inpainting Training | Device: {device}")
@@ -315,8 +318,13 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
             }, ckpt_path)
             print(f"   💾 Checkpoint → {ckpt_path}")
 
-        # ── Clear GPU cache ────────────────────────────────────────────────────
+        # ── Clear GPU cache + heap hygiene ──────────────────────────────────
         torch.cuda.empty_cache()
+        gc.collect()
+        try:
+            ctypes.CDLL('libc.so.6').malloc_trim(0)
+        except Exception:
+            pass
 
         # ── Early Stopping ────────────────────────────────────────────────────
         if epochs_no_improve >= EARLY_STOP_PATIENCE:
