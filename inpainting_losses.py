@@ -280,16 +280,16 @@ class InpaintingLoss(nn.Module):
             target_dilated = F.conv2d(target, kernel, padding=1)
             target_dilated = (target_dilated > 0).float()  # (B,1,H,W)
 
-        # BCE between dilated maps
-        # F.binary_cross_entropy is blocked under autocast (float16 BCE is
-        # numerically unsafe — PyTorch raises a RuntimeError by design).
-        # Upcasting to float32 for this one op is the standard fix; gradients
-        # flow correctly back into the float16 graph via autocast bookkeeping.
+        # F.binary_cross_entropy is blocklisted by PyTorch's autocast at the
+        # DISPATCH level — it raises regardless of input dtype while inside any
+        # autocast context.  The correct fix (per PyTorch docs) is to suspend
+        # autocast for this specific op using enabled=False, then pass float32.
         pred_dilated_clamped = pred_dilated.clamp(1e-6, 1.0 - 1e-6)
-        loss = F.binary_cross_entropy(
-            pred_dilated_clamped.float(),
-            target_dilated.detach().float()
-        )
+        with torch.amp.autocast('cuda', enabled=False):
+            loss = F.binary_cross_entropy(
+                pred_dilated_clamped.float(),
+                target_dilated.detach().float()
+            )
         return loss
 
     # ── Combined Forward ──────────────────────────────────────────────────────
