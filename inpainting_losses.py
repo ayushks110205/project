@@ -268,17 +268,19 @@ class InpaintingLoss(nn.Module):
         Returns:
             scalar loss
         """
+        # Cast kernel to match pred's dtype (float16 under AMP, float32 otherwise)
+        kernel = self.dil_kernel.to(dtype=pred.dtype)
+
         # Dilate pred (soft, not binarised — keeps gradients flowing)
-        # We use the soft pred directly in conv to maintain gradient path.
-        pred_dilated   = F.conv2d(pred,   self.dil_kernel, padding=1)   # (B,1,H,W)
-        pred_dilated   = pred_dilated.clamp(0, 1)                         # soft [0,1]
+        pred_dilated = F.conv2d(pred, kernel, padding=1)   # (B,1,H,W)
+        pred_dilated = pred_dilated.clamp(0, 1)             # soft [0,1]
 
         # Dilate target (binary — detach, no grad needed)
         with torch.no_grad():
-            target_dilated = morphological_dilate(target, self.dil_kernel)  # (B,1,H,W)
+            target_dilated = F.conv2d(target, kernel, padding=1)
+            target_dilated = (target_dilated > 0).float()  # (B,1,H,W)
 
         # BCE between dilated maps
-        # pred_dilated may exceed 1.0 due to summation → clamp before BCE
         pred_dilated_clamped = pred_dilated.clamp(1e-6, 1.0 - 1e-6)
         loss = F.binary_cross_entropy(pred_dilated_clamped,
                                       target_dilated.detach())

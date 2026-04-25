@@ -96,7 +96,7 @@ def run_evaluation(model_path: str,
     _, val_ds = get_road_splits(image_dir, mask_dir, val_ratio=val_ratio)
     val_loader = DataLoader(
         val_ds, batch_size=16, shuffle=False,
-        num_workers=4, pin_memory=True
+        num_workers=0, pin_memory=False   # P100: no workers to keep RAM lean
     )
     print(f"🗂️  Evaluating on {len(val_ds)} validation images "
           f"({val_ratio*100:.0f}% of total dataset)\n")

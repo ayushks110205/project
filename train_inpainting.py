@@ -166,11 +166,12 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
     # ── 4d. Optimiser + Scheduler ─────────────────────────────────────────────
     optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WD)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', patience=4, factor=0.5, verbose=True
+        optimizer, mode='min', patience=4, factor=0.5
+        # verbose=True removed — deprecated in PyTorch 2.x; LR printed manually below
     )
 
     # ── 4e. AMP Scaler ────────────────────────────────────────────────────────
-    scaler = GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
 
     # ── 4f. Training State ────────────────────────────────────────────────────
     best_val_hole     = float('inf')
@@ -204,7 +205,7 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
 
             optimizer.zero_grad(set_to_none=True)
 
-            with autocast():
+            with torch.amp.autocast('cuda'):
                 pred   = model(corrupted, hole_mask)
                 losses = loss_fn(pred, complete, hole_mask)
 
@@ -245,7 +246,7 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
                 hole_mask = hole_mask.to(device, non_blocking=True)
                 complete  = complete.to(device, non_blocking=True)
 
-                with autocast():
+                with torch.amp.autocast('cuda'):
                     pred   = model(corrupted, hole_mask)
                     losses = loss_fn(pred, complete, hole_mask)
 
