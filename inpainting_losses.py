@@ -280,16 +280,20 @@ class InpaintingLoss(nn.Module):
             target_dilated = F.conv2d(target, kernel, padding=1)
             target_dilated = (target_dilated > 0).float()  # (B,1,H,W)
 
-        # F.binary_cross_entropy is blocklisted by PyTorch's autocast at the
-        # DISPATCH level — it raises regardless of input dtype while inside any
-        # autocast context.  The correct fix (per PyTorch docs) is to suspend
-        # autocast for this specific op using enabled=False, then pass float32.
-        pred_dilated_clamped = pred_dilated.clamp(1e-6, 1.0 - 1e-6)
-        with torch.amp.autocast('cuda', enabled=False):
-            loss = F.binary_cross_entropy(
-                pred_dilated_clamped.float(),
-                target_dilated.detach().float()
-            )
+        # MSE between dilated maps.
+        #
+        # Why MSE instead of BCE:
+        #   BCE had three compounding AMP problems:
+        #     1. Blocked by PyTorch autocast dispatch (RuntimeError)
+        #     2. float16 epsilon (1e-6) rounds to 0 → -log(0) = -inf → CUDA assertion
+        #     3. Required autocast(enabled=False) + .float() gymnastics
+        #
+        # MSE is:
+        #   • Autocast-safe (no blocklist)
+        #   • No epsilon / clamping needed (both inputs are naturally in [0,1])
+        #   • Semantically equivalent: penalises gaps in the dilated road network
+        #     just as effectively as BCE for this [0,1] comparison task.
+        loss = F.mse_loss(pred_dilated.float(), target_dilated.detach().float())
         return loss
 
     # ── Combined Forward ──────────────────────────────────────────────────────
