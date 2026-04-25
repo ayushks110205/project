@@ -268,8 +268,8 @@ class InpaintingLoss(nn.Module):
         Returns:
             scalar loss
         """
-        # Cast kernel to match pred's dtype (float16 under AMP, float32 otherwise)
-        kernel = self.dil_kernel.to(dtype=pred.dtype)
+        # Cast kernel to match pred's device AND dtype (e.g. cuda + float16 under AMP)
+        kernel = self.dil_kernel.to(device=pred.device, dtype=pred.dtype)
 
         # Dilate pred (soft, not binarised — keeps gradients flowing)
         pred_dilated = F.conv2d(pred, kernel, padding=1)   # (B,1,H,W)

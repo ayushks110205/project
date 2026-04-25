@@ -155,13 +155,16 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
     model = get_inpainting_model(base_channels=64).to(device)
 
     # ── 4c. Loss ──────────────────────────────────────────────────────────────
+    # .to(device) moves ALL nn.Module buffers to CUDA — including dil_kernel.
+    # The InpaintingLoss.__init__ only moved the VGG sub-module explicitly;
+    # this call ensures dil_kernel also lives on GPU from the start.
     loss_fn = InpaintingLoss(
         lambda_valid=LAMBDA_VALID,
         lambda_hole=LAMBDA_HOLE,
         lambda_perc=LAMBDA_PERC,
         lambda_conn=LAMBDA_CONN,
         device=device,
-    )
+    ).to(device)
 
     # ── 4d. Optimiser + Scheduler ─────────────────────────────────────────────
     optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WD)
