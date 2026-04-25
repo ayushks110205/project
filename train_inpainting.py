@@ -72,14 +72,14 @@ CHECKPOINT_EVERY    = 5
 # ── Checkpoint Resume ─────────────────────────────────────────────────────────
 # The script auto-detects the LATEST checkpoint in RESUME_CKPT_DIR.
 # • Default  : same as CKPT_DIR (working session, if checkpoints already exist)
-# • Override : point to a Kaggle dataset you uploaded the .pth files to, e.g.
-#              '/kaggle/input/inpainting-ckpts'
+# • Override : point to a Kaggle dataset you uploaded the .pth files to
 # • Disable  : set to None to always start from scratch
 #
-# ✅ Kaggle dataset "best path" → slug: best-path
-#    Contains: inpainting_ckpt_ep30.pth  (auto-detected as highest epoch)
-#    Also has: inpainting_best.pth, road_model_best.pth
-RESUME_CKPT_DIR = '/kaggle/input/best-path'
+# ✅ This notebook mounts all datasets under /kaggle/input/datasets/<username>/
+#    Matches the existing BASE_PATH pattern:
+#    /kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset
+#    So "best path" dataset → /kaggle/input/datasets/ayushks07/best-path
+RESUME_CKPT_DIR = '/kaggle/input/datasets/ayushks07/best-path'
 
 # Loss weights (must match InpaintingLoss defaults for clarity)
 LAMBDA_VALID = 1.0
