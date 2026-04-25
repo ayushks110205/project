@@ -11,7 +11,7 @@ import numpy as np
 import cv2
 import torch
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')
@@ -119,7 +119,7 @@ def run_evaluation(model_path: str,
 
     _, val_ds = get_inpainting_splits(mask_dir, val_ratio=val_ratio)
     loader    = DataLoader(val_ds, batch_size=8, shuffle=False,
-                           num_workers=4, pin_memory=True)
+                           num_workers=0, pin_memory=True)
     print(f"🗂️  Val images: {len(val_ds)}\n")
     os.makedirs(save_dir, exist_ok=True)
     ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -130,7 +130,7 @@ def run_evaluation(model_path: str,
         for corrupted, hole_mask, complete in tqdm(loader, desc="Eval", unit='batch'):
             corrupted = corrupted.to(device, non_blocking=True)
             hole_mask = hole_mask.to(device, non_blocking=True)
-            with autocast():
+            with autocast('cuda'):
                 pred = model(corrupted, hole_mask)   # (B,1,H,W)
 
             pp  = pred.squeeze(1).cpu().numpy()            # (B,H,W) prob
@@ -198,8 +198,17 @@ def run_evaluation(model_path: str,
 
 
 if __name__ == '__main__':
-    mp = '/kaggle/working/inpainting_best.pth'
-    if not os.path.exists(mp):
-        print(f"❌ Model not found: {mp}. Train Stage 2 first.")
+    # Check multiple candidate paths — working dir first, then uploaded dataset
+    model_candidates = [
+        '/kaggle/working/inpainting_best.pth',
+        '/kaggle/input/datasets/ayushks07/best-path/inpainting_best.pth',
+    ]
+    mp = next((p for p in model_candidates if os.path.exists(p)), None)
+    if mp is None:
+        print("❌ Model not found in any of:")
+        for p in model_candidates:
+            print(f"   {p}")
+        print("Train Stage 2 first, or upload inpainting_best.pth to the 'best path' dataset.")
     else:
+        print(f"📦 Loading model from: {mp}")
         run_evaluation(mp)
