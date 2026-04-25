@@ -178,7 +178,7 @@ def run_evaluation(model_path: str,
         c_t = c_t.unsqueeze(0).to(device)
         h_t = h_t.unsqueeze(0).to(device)
         with torch.no_grad():
-            with autocast():
+            with autocast('cuda'):
                 p_t = model(c_t, h_t)
 
         pp   = p_t.squeeze().cpu().numpy()
