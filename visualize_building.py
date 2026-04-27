@@ -151,7 +151,7 @@ def run_visualization(model_path=MODEL_PATH, image_dir=IMAGE_DIR,
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model = get_building_model().to(device)
-    state = torch.load(model_path, map_location=device)
+    state = torch.load(model_path, map_location=device, weights_only=False)
     if isinstance(state, dict) and 'model_state' in state:
         model.load_state_dict(state['model_state'])
     else:

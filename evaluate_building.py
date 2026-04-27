@@ -119,7 +119,7 @@ def run_evaluation(model_path=MODEL_PATH, use_tta=True):
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model = get_building_model().to(device)
-    state = torch.load(model_path, map_location=device)
+    state = torch.load(model_path, map_location=device, weights_only=False)
     # Support both plain state_dict and full checkpoint dicts
     if isinstance(state, dict) and 'model_state' in state:
         model.load_state_dict(state['model_state'])
