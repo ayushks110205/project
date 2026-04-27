@@ -228,7 +228,11 @@ def compute_iou_batch(logits: torch.Tensor,
     preds = (torch.sigmoid(logits) > threshold).float()
     inter = (preds * masks).sum(dim=(1, 2, 3))
     union = (preds + masks).clamp(max=1).sum(dim=(1, 2, 3))
-    iou   = ((inter + 1e-6) / (union + 1e-6)).mean().item()
+    # Skip images where BOTH prediction and GT are empty — avoids false 1.0
+    valid = union > 0
+    if valid.sum() == 0:
+        return 0.0
+    iou = (inter[valid] / union[valid]).mean().item()
     return iou
 
 

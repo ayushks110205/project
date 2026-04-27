@@ -310,6 +310,15 @@ class MassachusettsBuildingDataset(Dataset):
         self.images = [source[i] for i in indices] \
                       if indices is not None else list(source)
 
+        # Build stem→path lookup for masks (handles .tif vs .tiff mismatches)
+        _exts = ('.tiff', '.tif', '.png', '.jpg')
+        self._mask_lookup = {}
+        if os.path.isdir(mask_dir):
+            for mf in os.listdir(mask_dir):
+                if os.path.splitext(mf)[1].lower() in _exts:
+                    stem = os.path.splitext(mf)[0]
+                    self._mask_lookup[stem] = os.path.join(mask_dir, mf)
+
     def __len__(self):
         return len(self.images)
 
@@ -339,9 +348,10 @@ class MassachusettsBuildingDataset(Dataset):
         pil_img  = Image.open(img_path).convert('RGB')
         image    = np.array(pil_img, dtype=np.uint8)   # (H, W, 3) uint8 RGB
 
-        # ── Load binary mask via PIL ──────────────────────────────────────────
-        mask_path = os.path.join(self.mask_dir, img_name)
-        if not os.path.exists(mask_path):
+        # ── Load binary mask via PIL (extension-agnostic lookup) ─────────────
+        img_stem  = os.path.splitext(img_name)[0]
+        mask_path = self._mask_lookup.get(img_stem)
+        if mask_path is None:
             h, w     = image.shape[:2]
             mask_raw = np.zeros((h, w), dtype=np.uint8)
         else:

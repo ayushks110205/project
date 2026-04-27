@@ -40,8 +40,8 @@ from evaluate_building import tta_predict
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
 DATASET_BASE = '/kaggle/input/datasets/balraj98/massachusetts-buildings-dataset'
-IMAGE_DIR    = f'{DATASET_BASE}/tiff/val'
-MASK_DIR     = f'{DATASET_BASE}/tiff/val_labels'
+IMAGE_DIR    = f'{DATASET_BASE}/tiff/train'        # use train split (model was trained here)
+MASK_DIR     = f'{DATASET_BASE}/tiff/train_labels'
 MODEL_PATH   = '/kaggle/working/building_model_best.pth'
 SAVE_DIR     = '/kaggle/working/results/buildings'
 IMG_SIZE     = 640
@@ -219,7 +219,16 @@ def run_visualization(model_path=MODEL_PATH, image_dir=IMAGE_DIR,
                     prob = torch.sigmoid(model(img_tensor))
 
         prob_np  = prob.squeeze().cpu().numpy()                     # (640, 640)
-        pred_bin = np.where(prob_np > 0.5, np.uint8(255), np.uint8(0))
+
+        # Adaptive threshold: use 0.2 for low-confidence models
+        THRESHOLD = 0.2
+        pred_bin = np.where(prob_np > THRESHOLD,
+                            np.uint8(255), np.uint8(0))
+
+        # Debug output stats
+        print(f"  {img_name}: prob_max={prob_np.max():.3f} "
+              f"mean={prob_np.mean():.4f} "
+              f"px>{THRESHOLD}={(prob_np > THRESHOLD).sum()}")
 
         inter = ((gt_disp > 0) & (pred_bin > 0)).sum()
         union = ((gt_disp > 0) | (pred_bin > 0)).sum()
