@@ -32,9 +32,9 @@ from models import get_landcover_model
 # ⚠ Update DATASET_NAME to match your Kaggle dataset slug.
 # Input datasets are READ-ONLY at /kaggle/input/<slug>/
 # All outputs (models, checkpoints) go to /kaggle/working/ (persistent).
-# ✔️ Slug is correct — full mount path includes /datasets/<username>/
-DATASET_NAME = 'deep-globe-extraction-dataset'
-DATASET_BASE = f'/kaggle/input/datasets/ayushks07/{DATASET_NAME}'
+# ✔️ Land Cover dataset — balraj98/deepglobe-land-cover-classification-dataset
+DATASET_NAME = 'deepglobe-land-cover-classification-dataset'
+DATASET_BASE = f'/kaggle/input/datasets/balraj98/{DATASET_NAME}'
 
 IMAGE_DIR    = f'{DATASET_BASE}/train'
 MASK_DIR     = f'{DATASET_BASE}/train'
