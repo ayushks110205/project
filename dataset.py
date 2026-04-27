@@ -331,27 +331,27 @@ class MassachusettsBuildingDataset(Dataset):
         return dist.astype(np.float32)
 
     def __getitem__(self, idx):
+        from PIL import Image
         img_name = self.images[idx]
 
-        # ── Load satellite image ──────────────────────────────────────────────
+        # ── Load satellite image via PIL (no libtiff GeoTIFF warnings) ───────
         img_path = os.path.join(self.image_dir, img_name)
-        image    = cv2.imread(img_path, cv2.IMREAD_COLOR)
-        if image is None:
-            raise FileNotFoundError(f"Image not found: {img_path}")
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)    # (H, W, 3) uint8
+        pil_img  = Image.open(img_path).convert('RGB')
+        image    = np.array(pil_img, dtype=np.uint8)   # (H, W, 3) uint8 RGB
 
-        # ── Load binary mask ──────────────────────────────────────────────────
+        # ── Load binary mask via PIL ──────────────────────────────────────────
         mask_path = os.path.join(self.mask_dir, img_name)
         if not os.path.exists(mask_path):
             h, w     = image.shape[:2]
             mask_raw = np.zeros((h, w), dtype=np.uint8)
         else:
-            mask_raw = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            pil_mask = Image.open(mask_path).convert('L')   # grayscale
+            mask_raw = np.array(pil_mask, dtype=np.uint8)
             mask_raw = np.where(mask_raw >= 128, np.uint8(255), np.uint8(0))
 
         # ── Auxiliary maps ────────────────────────────────────────────────────
-        edge_mask = self._make_edge_mask(mask_raw)   # (H, W) float32
-        dist_map  = self._make_dist_map(mask_raw)    # (H, W) float32
+        edge_mask  = self._make_edge_mask(mask_raw)   # (H, W) float32
+        dist_map   = self._make_dist_map(mask_raw)    # (H, W) float32
         mask_float = (mask_raw > 0).astype(np.float32)
 
         # ── Apply transform ───────────────────────────────────────────────────
