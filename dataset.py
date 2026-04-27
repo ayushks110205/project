@@ -691,15 +691,16 @@ building_train_transform = A.Compose(
         A.RandomRotate90(p=0.5),
         A.RandomBrightnessContrast(p=0.3),
         A.HueSaturationValue(p=0.2),
-        A.GaussNoise(p=0.15),
+        A.GaussNoise(std_range=(0.02, 0.1), p=0.15),
         # ── Appearance ─────────────────────────────────────────────────────
         A.RandomShadow(p=0.3),               # simulate building shadows
-        A.ElasticTransform(alpha=120, sigma=6, p=0.2),
+        A.ElasticTransform(p=0.2),
         A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.2),
         A.OpticalDistortion(distort_limit=0.2, p=0.15),
         A.CoarseDropout(
-            max_holes=8, max_height=64, max_width=64,
-            min_holes=1, min_height=8,  min_width=8,
+            num_holes_range=(1, 8),
+            hole_height_range=(8, 64),
+            hole_width_range=(8, 64),
             fill_value=0, p=0.15
         ),
         A.CLAHE(p=0.2),                      # contrast-limited AHE for shadows

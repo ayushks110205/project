@@ -49,9 +49,11 @@ CKPT_DIR     = '/kaggle/working/building_ckpts'
 os.makedirs(CKPT_DIR, exist_ok=True)
 
 # Hyperparameters
-# 640×640 fp16 with UnetPlusPlus ResNet50: ~2.5 GB activations per sample.
-# Batch=8 → ~20 GB in fp16 — fits P100's 16 GB VRAM comfortably with AMP.
-BATCH_SIZE   = 8
+# UnetPlusPlus ResNet50 with scse at 640x640 fp16:
+#   ~4 GB activations per sample due to dense nested skip connections.
+#   Batch=4 → ~16 GB fits P100's 16 GB safely with AMP.
+#   (Plain Unet could fit Batch=8; UnetPlusPlus cannot — 2x skip connections)
+BATCH_SIZE   = 4
 NUM_EPOCHS   = 50
 LR           = 1e-4
 MAX_LR       = 3e-4      # OneCycleLR peak
@@ -59,8 +61,6 @@ WEIGHT_DECAY = 1e-4
 VAL_RATIO    = 0.2
 PATIENCE     = 8         # early stopping on val IoU
 CKPT_EVERY   = 5
-# num_workers=0: P100 environment has the same 30 GB RAM limit as T4×2.
-# Each worker costs ~1.5 GB; keeping 0 gives ~14 GB of training headroom.
 NUM_WORKERS  = 0
 
 
@@ -233,6 +233,9 @@ def compute_iou_batch(logits: torch.Tensor,
 # =============================================================================
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Reduce memory fragmentation — critical for UnetPlusPlus dense skip connections
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 # cuDNN: disable benchmark mode to prevent RAM creep from algo-probe caching
 torch.backends.cudnn.benchmark    = False
