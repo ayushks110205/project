@@ -610,17 +610,20 @@ train_transform = A.Compose([
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
     A.RandomRotate90(p=0.5),
-    A.ShiftScaleRotate(
-        shift_limit=0.1, scale_limit=0.15, rotate_limit=30,
-        border_mode=cv2.BORDER_REFLECT_101, p=0.35
+    A.Affine(
+        translate_percent={'x': (-0.1, 0.1), 'y': (-0.1, 0.1)},
+        scale=(0.85, 1.15),
+        rotate=(-30, 30),
+        mode=cv2.BORDER_REFLECT_101, p=0.35
     ),
     A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
     A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15,
                          val_shift_limit=10, p=0.2),
     A.CoarseDropout(
-        max_holes=6, max_height=32, max_width=32,
-        min_holes=1, min_height=8,  min_width=8,
-        fill_value=0, p=0.1
+        num_holes_range=(1, 6),
+        hole_height_range=(8, 32),
+        hole_width_range=(8, 32),
+        fill=0, p=0.1
     ),
     A.Normalize(mean=_MEAN, std=_STD),
     ToTensorV2(),
@@ -650,11 +653,12 @@ landcover_train_transform = A.Compose(
         A.HueSaturationValue(
             hue_shift_limit=10, sat_shift_limit=20,
             val_shift_limit=15, p=0.2),
-        A.GaussNoise(var_limit=(10.0, 50.0), p=0.15),
+        A.GaussNoise(std_range=(0.01, 0.05), p=0.15),
         A.CoarseDropout(
-            max_holes=4, max_height=32, max_width=32,
-            min_holes=1, min_height=8, min_width=8,
-            fill_value=0, p=0.1),
+            num_holes_range=(1, 4),
+            hole_height_range=(8, 32),
+            hole_width_range=(8, 32),
+            fill=0, p=0.1),
         A.Normalize(mean=_MEAN, std=_STD),
         ToTensorV2(),
     ],

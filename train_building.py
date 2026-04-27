@@ -35,7 +35,7 @@ from dataset import get_massachusetts_building_splits
 from models import get_building_model
 
 import cv2
-cv2.setLogLevel(2)   # suppress OpenCV TIFF_Warning GeoTIFF metadata noise
+os.environ.setdefault('OPENCV_LOG_LEVEL', 'ERROR')  # suppress TIFF GeoTIFF metadata warnings
 
 
 
