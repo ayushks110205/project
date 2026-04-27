@@ -30,7 +30,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from PIL import Image
-from scipy import ndimage as ndi
 import cv2
 
 from dataset import MassachusettsBuildingDataset, building_val_transform
@@ -72,16 +71,20 @@ def postprocess_mask(binary_mask):
 # =============================================================================
 
 def make_instance_map(binary_mask):
-    """Label each connected building with a unique colour."""
-    labelled, n = ndi.label(binary_mask > 0)
+    """Label each connected building with a unique colour (cv2 version)."""
+    # cv2.connectedComponents: 0=background, 1..N = building labels
+    n_labels, labelled = cv2.connectedComponents(
+        (binary_mask > 0).astype(np.uint8), connectivity=8
+    )
+    n_buildings = n_labels - 1   # subtract background label 0
     rng     = random.Random(42)
-    palette = [(0, 0, 0)]
-    for _ in range(n):
+    palette = [(0, 0, 0)]        # label 0 = background = black
+    for _ in range(n_buildings):
         h, s, v = rng.random(), rng.uniform(0.5, 1.0), rng.uniform(0.6, 1.0)
         palette.append(tuple(int(c * 255) for c in mcolors.hsv_to_rgb([h, s, v])))
     H, W   = labelled.shape
     result = np.zeros((H, W, 3), dtype=np.uint8)
-    for lbl in range(n + 1):
+    for lbl in range(n_labels):
         result[labelled == lbl] = palette[lbl]
     return result
 
