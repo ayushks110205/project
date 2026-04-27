@@ -614,7 +614,7 @@ train_transform = A.Compose([
         translate_percent={'x': (-0.1, 0.1), 'y': (-0.1, 0.1)},
         scale=(0.85, 1.15),
         rotate=(-30, 30),
-        mode=cv2.BORDER_REFLECT_101, p=0.35
+        border_mode=cv2.BORDER_REFLECT_101, p=0.35
     ),
     A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
     A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15,
@@ -705,7 +705,7 @@ building_train_transform = A.Compose(
             num_holes_range=(1, 8),
             hole_height_range=(8, 64),
             hole_width_range=(8, 64),
-            fill_value=0, p=0.15
+            fill=0, p=0.15
         ),
         A.CLAHE(p=0.2),                      # contrast-limited AHE for shadows
         A.Sharpen(p=0.15),                   # sharpens building edge details

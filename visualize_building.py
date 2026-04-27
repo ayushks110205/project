@@ -169,6 +169,14 @@ def run_visualization(model_path=MODEL_PATH, image_dir=IMAGE_DIR,
     print(f"   Generating {n_per_cat} figures per category "
           f"(best/worst/mid-high/mid-low) | TTA: {use_tta}\n")
 
+    # Build a stem→full-path lookup for masks (handles extension mismatches)
+    mask_lookup = {}
+    if os.path.isdir(mask_dir):
+        for mf in os.listdir(mask_dir):
+            if os.path.splitext(mf)[1].lower() in exts:
+                stem = os.path.splitext(mf)[0]
+                mask_lookup[stem] = os.path.join(mask_dir, mf)
+
     # ── Per-image inference ────────────────────────────────────────────────────
     results = []
     for img_name in val_files:
@@ -176,8 +184,10 @@ def run_visualization(model_path=MODEL_PATH, image_dir=IMAGE_DIR,
         pil_img   = Image.open(os.path.join(image_dir, img_name)).convert('RGB')
         img_rgb   = np.array(pil_img, dtype=np.uint8)    # (H, W, 3)
 
-        mask_path = os.path.join(mask_dir, img_name)
-        if not os.path.exists(mask_path):
+        img_stem  = os.path.splitext(img_name)[0]
+        mask_path = mask_lookup.get(img_stem)
+        if mask_path is None:
+            print(f"  ⚠ No mask found for {img_name} — skipping")
             continue
         pil_mask  = Image.open(mask_path).convert('L')
         mask_raw  = np.array(pil_mask, dtype=np.uint8)
