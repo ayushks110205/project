@@ -202,6 +202,9 @@ class DeepGlobeLandCoverDataset(Dataset):
             total / (self.NUM_CLASSES * counts),
             0.0
         ).astype(np.float32)
+        # Cap weights at 10.0 — very rare classes (e.g. Unknown at 0.06%)
+        # produce weights >200 which cause catastrophic loss spikes.
+        weights = np.clip(weights, 0.0, 10.0).astype(np.float32)
         print("📊 Class distribution:")
         for name, cnt, w in zip(self.CLASS_NAMES, counts, weights):
             pct = 100.0 * cnt / total if total > 0 else 0.0
