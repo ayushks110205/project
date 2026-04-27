@@ -14,7 +14,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast
+import torch.amp
 from tqdm import tqdm
 
 from dataset import get_landcover_splits, DeepGlobeLandCoverDataset
@@ -23,15 +23,15 @@ from models import get_landcover_model
 # ─────────────────────────────────────────────────────────────────────────────
 # Config  — Kaggle paths
 # ─────────────────────────────────────────────────────────────────────────────
-DATASET_NAME = 'deepglobe-land-cover'   # ⚠ match your Kaggle dataset slug
-IMAGE_DIR    = f'/kaggle/input/{DATASET_NAME}/images'
-MASK_DIR     = f'/kaggle/input/{DATASET_NAME}/masks'
-MODEL_PATH   = '/kaggle/working/landcover_model_latest.pth'
-RESULTS_DIR  = '/kaggle/working/results'
+DATASET_BASE = '/kaggle/input/datasets/balraj98/deepglobe-land-cover-classification-dataset'
+IMAGE_DIR    = f'{DATASET_BASE}/train'
+MASK_DIR     = f'{DATASET_BASE}/train'
+MODEL_PATH   = '/kaggle/input/datasets/ayushks07/best-path-for-landcover/landcover_best (1).pth'
+RESULTS_DIR  = '/kaggle/working/results/landcover_eval'
 
 NUM_CLASSES = 7
-BATCH_SIZE  = 16   # match training batch size
-NUM_WORKERS = 4
+BATCH_SIZE  = 16
+NUM_WORKERS = 0   # P100: keep at 0 to avoid multiprocessing OOM
 CLASS_NAMES = DeepGlobeLandCoverDataset.CLASS_NAMES
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -70,7 +70,7 @@ with torch.no_grad():
         images = images.to(device, non_blocking=True)
         masks  = masks.to(device, non_blocking=True).long()
 
-        with autocast():
+        with torch.amp.autocast('cuda'):
             logits = model(images)
             # logits: (B, 7, 512, 512)
 
