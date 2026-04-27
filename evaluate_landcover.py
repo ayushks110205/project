@@ -167,10 +167,8 @@ print(f'  Frequency-weighted IoU : {fw_iou:.4f}')
 print(f'  mIoU                   : {miou:.4f}')
 
 # Hardest / easiest class (among present classes)
-iou_masked     = iou.clone()
-iou_masked[~present] = float('nan')
-hardest_idx    = iou_masked.nanargmin().item()
-easiest_idx    = iou_masked.nanargmax().item()
+hardest_idx = torch.where(present, iou, torch.full_like(iou, float('inf'))).argmin().item()
+easiest_idx = torch.where(present, iou, torch.full_like(iou, float('-inf'))).argmax().item()
 print(f'\n  Hardest class: {CLASS_NAMES[hardest_idx]:<12s} IoU={iou_list[hardest_idx]:.4f}')
 print(f'  Easiest class: {CLASS_NAMES[easiest_idx]:<12s} IoU={iou_list[easiest_idx]:.4f}')
 
