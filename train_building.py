@@ -25,13 +25,13 @@ import time
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+import torch.amp
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 import segmentation_models_pytorch as smp
 from tqdm import tqdm
 
-from dataset import get_building_splits
+from dataset import get_massachusetts_building_splits
 from models import get_building_model
 
 
@@ -39,9 +39,10 @@ from models import get_building_model
 # Section 1 ▸ Configuration
 # =============================================================================
 
-DATASET_DIR  = '/kaggle/input/deepglobe-building'
-IMAGE_DIR    = DATASET_DIR
-MASK_DIR     = DATASET_DIR
+# ✔️ Massachusetts Buildings Dataset (balraj98/massachusetts-buildings-dataset)
+DATASET_BASE = '/kaggle/input/datasets/balraj98/massachusetts-buildings-dataset'
+IMAGE_DIR    = f'{DATASET_BASE}/tiff/train'
+MASK_DIR     = f'{DATASET_BASE}/tiff/train_labels'
 
 BEST_CKPT    = '/kaggle/working/building_model_best.pth'
 CKPT_DIR     = '/kaggle/working/building_ckpts'
@@ -73,6 +74,31 @@ def _trim_heap():
         ctypes.CDLL('libc.so.6').malloc_trim(0)
     except Exception:
         pass  # silently skip on Windows dev machines
+
+
+def find_latest_building_checkpoint(ckpt_dir: str):
+    """Scan CKPT_DIR for the latest building_ckpt_ep*.pth file.
+
+    Returns:
+        (path, epoch) tuple if found, else (None, 0)
+    """
+    if not os.path.isdir(ckpt_dir):
+        return None, 0
+    candidates = [
+        f for f in os.listdir(ckpt_dir)
+        if f.startswith('building_ckpt_ep') and f.endswith('.pth')
+    ]
+    if not candidates:
+        return None, 0
+    # Parse epoch numbers from filenames
+    def _epoch(name):
+        try:
+            return int(name.replace('building_ckpt_ep', '').replace('.pth', ''))
+        except ValueError:
+            return -1
+    latest = max(candidates, key=_epoch)
+    epoch  = _epoch(latest)
+    return os.path.join(ckpt_dir, latest), epoch
 
 
 # =============================================================================
@@ -226,8 +252,20 @@ else:
 
 def train_building(epochs: int = NUM_EPOCHS):
     # ── 6a. Data ──────────────────────────────────────────────────────────────
-    train_ds, val_ds = get_building_splits(IMAGE_DIR, MASK_DIR,
-                                           val_ratio=VAL_RATIO)
+    # Massachusetts dataset has pre-defined splits — use them directly
+    # train/ + train_labels/  →  training set
+    # val/   + val_labels/    →  validation set
+    val_image_dir = IMAGE_DIR.replace('/train', '/val')
+    val_mask_dir  = MASK_DIR.replace('/train_labels', '/val_labels')
+
+    from dataset import MassachusettsBuildingDataset, building_train_transform, building_val_transform
+    train_ds = MassachusettsBuildingDataset(
+        IMAGE_DIR, MASK_DIR, transform=building_train_transform
+    )
+    val_ds = MassachusettsBuildingDataset(
+        val_image_dir, val_mask_dir, transform=building_val_transform
+    )
+    print(f"📂 Massachusetts Building → Train: {len(train_ds)} | Val: {len(val_ds)}")
 
     train_loader = DataLoader(
         train_ds,
@@ -269,15 +307,33 @@ def train_building(epochs: int = NUM_EPOCHS):
         anneal_strategy='cos',
     )
 
-    scaler = GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
 
-    # ── 6e. Training state ────────────────────────────────────────────────────
+    # ── 6e. Training state + Auto-Resume ─────────────────────────────────────
     best_iou          = 0.0
     epochs_no_improve = 0
+    start_epoch       = 1
     history = {'train_loss': [], 'val_loss': [], 'val_iou': []}
 
+    resume_path, resume_epoch = find_latest_building_checkpoint(CKPT_DIR)
+    if resume_path:
+        print(f"\n⏳ Resuming from checkpoint: {resume_path}")
+        ckpt_data = torch.load(resume_path, map_location=device)
+        model.load_state_dict(ckpt_data['model_state'])
+        optimizer.load_state_dict(ckpt_data['optim_state'])
+        scheduler.load_state_dict(ckpt_data['sched_state'])
+        scaler.load_state_dict(ckpt_data['scaler_state'])
+        best_iou          = ckpt_data.get('best_iou', 0.0)
+        epochs_no_improve = ckpt_data.get('epochs_no_improve', 0)
+        history           = ckpt_data.get('history', history)
+        start_epoch       = resume_epoch + 1
+        print(f"   Resumed at epoch {resume_epoch} | best_iou={best_iou:.4f} | "
+              f"no_improve={epochs_no_improve}")
+    else:
+        print("\n✔️ No checkpoint found — starting from scratch.")
+
     # ── 6f. Epoch loop ────────────────────────────────────────────────────────
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         t0 = time.time()
         torch.cuda.reset_peak_memory_stats()
 
@@ -301,7 +357,7 @@ def train_building(epochs: int = NUM_EPOCHS):
 
             optimizer.zero_grad(set_to_none=True)
 
-            with autocast():
+            with torch.amp.autocast('cuda'):
                 logits = model(images)     # (B, 1, 640, 640)
                 loss   = compute_total_loss(
                     logits, masks, edge_masks, dist_maps,
@@ -340,7 +396,7 @@ def train_building(epochs: int = NUM_EPOCHS):
                 edge_masks = edge_masks.to(device, non_blocking=True).unsqueeze(1)
                 dist_maps  = dist_maps.to(device, non_blocking=True).unsqueeze(1)
 
-                with autocast():
+                with torch.amp.autocast('cuda'):
                     logits   = model(images)
                     val_loss = compute_total_loss(
                         logits, masks, edge_masks, dist_maps,
@@ -389,11 +445,14 @@ def train_building(epochs: int = NUM_EPOCHS):
         if epoch % CKPT_EVERY == 0:
             ckpt_path = os.path.join(CKPT_DIR, f'building_ckpt_ep{epoch:02d}.pth')
             torch.save({
-                'epoch':      epoch,
-                'model_state': model.state_dict(),
-                'optim_state': optimizer.state_dict(),
-                'best_iou':   best_iou,
-                'history':    history,
+                'epoch':          epoch,
+                'model_state':    model.state_dict(),
+                'optim_state':    optimizer.state_dict(),
+                'sched_state':    scheduler.state_dict(),
+                'scaler_state':   scaler.state_dict(),
+                'best_iou':       best_iou,
+                'epochs_no_improve': epochs_no_improve,
+                'history':        history,
             }, ckpt_path)
             print(f"   💾 Backup → {ckpt_path}")
 

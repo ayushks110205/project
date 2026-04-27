@@ -263,6 +263,153 @@ def get_landcover_splits(image_dir: str, mask_dir: str, val_ratio: float = 0.2):
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 3 ▸ Building Footprint Dataset (Stage 4)
 # ─────────────────────────────────────────────────────────────────────────────
+# Two dataset classes share the same 4-tuple interface:
+#   (image, mask, edge_mask, dist_map)
+#
+#   DeepGlobeBuildingDataset  – reads *_sat.jpg / *_mask.png in same folder
+#   MassachusettsBuildingDataset – reads *.tiff images + *.tiff masks from
+#                                   separate sibling folders (train / train_labels)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class MassachusettsBuildingDataset(Dataset):
+    """
+    Binary segmentation dataset for the Massachusetts Buildings Dataset.
+
+    Directory layout:
+        image_dir/   <tile_id>.tiff   (RGB satellite tile)
+        mask_dir/    <tile_id>.tiff   (Grayscale building mask, 255=building)
+
+    The two folders are siblings, e.g.:
+        .../tiff/train/          ← image_dir
+        .../tiff/train_labels/   ← mask_dir
+    Filenames match 1-to-1 between the two folders.
+
+    Returns per __getitem__:
+        image     : (3, 640, 640) float32 – normalised satellite image
+        mask      : (640, 640)    float32 – binary building mask {0, 1}
+        edge_mask : (640, 640)    float32 – Canny edges of building boundary
+        dist_map  : (640, 640)    float32 – distance transform (0-1 normalised)
+    """
+
+    def __init__(self, image_dir: str, mask_dir: str,
+                 transform=None, indices=None, _prebuilt_list=None):
+        self.image_dir = image_dir
+        self.mask_dir  = mask_dir
+        self.transform = transform
+
+        if _prebuilt_list is not None:
+            source = _prebuilt_list
+        else:
+            # Accept any image extension — Massachusetts uses .tiff
+            exts = ('.tiff', '.tif', '.png', '.jpg')
+            source = sorted(
+                [f for f in os.listdir(image_dir)
+                 if os.path.splitext(f)[1].lower() in exts]
+            )
+        self.images = [source[i] for i in indices] \
+                      if indices is not None else list(source)
+
+    def __len__(self):
+        return len(self.images)
+
+    # Reuse the same static helpers as DeepGlobeBuildingDataset
+    @staticmethod
+    def _make_edge_mask(binary_mask: np.ndarray) -> np.ndarray:
+        edges  = cv2.Canny(binary_mask, threshold1=100, threshold2=200)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        edges  = cv2.dilate(edges, kernel, iterations=1)
+        return (edges > 0).astype(np.float32)
+
+    @staticmethod
+    def _make_dist_map(binary_mask: np.ndarray) -> np.ndarray:
+        dist    = cv2.distanceTransform(binary_mask,
+                                        cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+        max_val = dist.max()
+        if max_val > 0:
+            dist = dist / max_val
+        return dist.astype(np.float32)
+
+    def __getitem__(self, idx):
+        img_name = self.images[idx]
+
+        # ── Load satellite image ──────────────────────────────────────────────
+        img_path = os.path.join(self.image_dir, img_name)
+        image    = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        if image is None:
+            raise FileNotFoundError(f"Image not found: {img_path}")
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)    # (H, W, 3) uint8
+
+        # ── Load binary mask ──────────────────────────────────────────────────
+        mask_path = os.path.join(self.mask_dir, img_name)
+        if not os.path.exists(mask_path):
+            h, w     = image.shape[:2]
+            mask_raw = np.zeros((h, w), dtype=np.uint8)
+        else:
+            mask_raw = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            mask_raw = np.where(mask_raw >= 128, np.uint8(255), np.uint8(0))
+
+        # ── Auxiliary maps ────────────────────────────────────────────────────
+        edge_mask = self._make_edge_mask(mask_raw)   # (H, W) float32
+        dist_map  = self._make_dist_map(mask_raw)    # (H, W) float32
+        mask_float = (mask_raw > 0).astype(np.float32)
+
+        # ── Apply transform ───────────────────────────────────────────────────
+        if self.transform:
+            aug       = self.transform(
+                image=image, mask=mask_float,
+                edge_mask=edge_mask, dist_map=dist_map,
+            )
+            image     = aug['image']
+            mask      = aug['mask']
+            edge_mask = aug['edge_mask']
+            dist_map  = aug['dist_map']
+        else:
+            image     = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
+            mask      = torch.from_numpy(mask_float)
+            edge_mask = torch.from_numpy(edge_mask)
+            dist_map  = torch.from_numpy(dist_map)
+
+        return image, mask, edge_mask, dist_map
+
+
+def get_massachusetts_building_splits(image_dir: str, mask_dir: str,
+                                      val_ratio: float = 0.2):
+    """
+    Returns (train_ds, val_ds) with a deterministic 80/20 split.
+
+    Args:
+        image_dir : folder with *.tiff satellite images  (e.g. .../tiff/train)
+        mask_dir  : folder with *.tiff masks             (e.g. .../tiff/train_labels)
+        val_ratio : fraction reserved for validation
+    """
+    import gc
+    exts = ('.tiff', '.tif', '.png', '.jpg')
+    all_images = sorted(
+        [f for f in os.listdir(image_dir)
+         if os.path.splitext(f)[1].lower() in exts]
+    )
+    n_total = len(all_images)
+    n_val   = int(n_total * val_ratio)
+    n_train = n_total - n_val
+
+    train_ds = MassachusettsBuildingDataset(
+        image_dir, mask_dir,
+        transform=building_train_transform,
+        indices=list(range(n_train)),
+        _prebuilt_list=all_images,
+    )
+    val_ds = MassachusettsBuildingDataset(
+        image_dir, mask_dir,
+        transform=building_val_transform,
+        indices=list(range(n_train, n_total)),
+        _prebuilt_list=all_images,
+    )
+    del all_images
+    gc.collect()
+    print(f"📂 Massachusetts Building split → Train: {len(train_ds)} | Val: {len(val_ds)}")
+    return train_ds, val_ds
+
 
 class DeepGlobeBuildingDataset(Dataset):
     """
