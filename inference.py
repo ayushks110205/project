@@ -24,9 +24,10 @@ from dataset import val_transform, building_val_transform
 # =============================================================================
 
 # ── Kaggle model paths ────────────────────────────────────────────────────────
-ROAD_WEIGHTS      = '/kaggle/working/road_model_best.pth'
-LANDCOVER_WEIGHTS = '/kaggle/working/landcover_model_best.pth'
-BUILDING_WEIGHTS  = '/kaggle/working/building_model_best.pth'
+# Dataset "best path" is mounted at /kaggle/input/best-path/
+ROAD_WEIGHTS      = '/kaggle/input/best-path/road_model_best.pth'
+LANDCOVER_WEIGHTS = '/kaggle/input/best-path/landcover_best.pth'
+BUILDING_WEIGHTS  = '/kaggle/input/best-path/building_model_best.pth'
 RESULTS_DIR       = '/kaggle/working/results'
 
 # Building detection threshold (lower than road/LC due to fine footprints)
