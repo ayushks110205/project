@@ -5,7 +5,7 @@
 #   Stage 1 : Road Extraction       (DeepLabV3+ ResNet34)
 #   Stage 2 : Map Inpainting        (Partial Conv U-Net)
 #   Stage 3 : Land Cover Classification (DeepLabV3+ ResNet34, 7-class)
-#   Stage 4 : Building Detection    (U-Net ResNet18)
+#   Stage 4 : Building Detection    (UnetPlusPlus ResNet50 + scse, 640×640)
 #
 # Install: pip install -r requirements.txt
 #
