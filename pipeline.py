@@ -49,6 +49,14 @@ from dataset import val_transform      # Stage 1 image pre-processing
 from inpainting_model  import get_inpainting_model
 from infer_inpainting  import auto_detect_holes
 
+# ── Kaggle dataset paths ────────────────────────────────────────────────────────
+# Dataset "best path" is mounted at /kaggle/input/best-path/
+_W_ROAD     = '/kaggle/input/best-path/road_model_best.pth'
+_W_INPAINT  = '/kaggle/input/best-path/inpainting_best.pth'
+_W_LC       = '/kaggle/input/best-path/landcover_best.pth'
+_W_BUILDING = '/kaggle/input/best-path/building_model_best.pth'
+_RESULTS    = '/kaggle/working/results/pipeline'
+
 # ImageNet normalisation (must match dataset.py val_transform)
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
