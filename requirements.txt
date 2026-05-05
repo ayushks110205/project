@@ -32,7 +32,6 @@ albumentations>=1.3.0             # HueSaturationValue, CoarseDropout, GaussNois
 
 # ── Numerical & Scientific ───────────────────────────────────────────────────
 numpy>=1.23.0
-scipy>=1.9.0                      # Used in pipeline.py spatial operations
 
 # ── Visualisation ─────────────────────────────────────────────────────────────
 matplotlib>=3.6.0                 # All visualisation scripts
@@ -41,13 +40,6 @@ seaborn>=0.12.0                   # evaluate_landcover.py confusion matrix heatm
 # ── Progress & Logging ───────────────────────────────────────────────────────
 tqdm>=4.64.0                      # Training progress bars
 
-# ── Geospatial (Stage 4 / pipeline.py) ───────────────────────────────────────
-rasterio>=1.3.0                   # GeoTIFF satellite image I/O
-shapely>=2.0.0                    # Geometric ops on building footprints
-pyproj>=3.4.0                     # Coordinate transformations
-fiona>=1.9.0                      # Vector data (building polygon shapefiles)
-
 # ── Miscellaneous ─────────────────────────────────────────────────────────────
-scikit-image>=0.19.0              # Pixel-level analysis, SSIM (inpainting eval)
+scikit-image>=0.19.0              # SSIM computation in evaluate_inpainting.py
 scikit-learn>=1.1.0               # Metrics helpers
-pandas>=1.5.0                     # DataFrame ops in pipeline / evaluate scripts

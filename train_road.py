@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+import torch.amp
 from tqdm import tqdm
 import segmentation_models_pytorch as smp
 try:
@@ -196,7 +196,7 @@ def train_road(epochs: int = NUM_EPOCHS):
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     # ── 4e. AMP Scaler ────────────────────────────────────────────────────────
-    scaler = GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
 
     # ── 4f. Training State ────────────────────────────────────────────────────
     best_val_loss     = float('inf')
@@ -241,7 +241,7 @@ def train_road(epochs: int = NUM_EPOCHS):
 
             optimizer.zero_grad(set_to_none=True)
 
-            with autocast():
+            with torch.amp.autocast('cuda' if device.type == 'cuda' else 'cpu'):
                 outputs = model(images)
                 loss    = criterion(outputs, masks)
 
@@ -274,7 +274,7 @@ def train_road(epochs: int = NUM_EPOCHS):
                 images = images.to(device, non_blocking=True)
                 masks  = masks.to(device, non_blocking=True).unsqueeze(1).float()
 
-                with autocast():
+                with torch.amp.autocast('cuda' if device.type == 'cuda' else 'cpu'):
                     outputs  = model(images)
                     val_loss = criterion(outputs, masks)
 

@@ -24,10 +24,10 @@ from dataset import val_transform, building_val_transform
 # =============================================================================
 
 # ── Kaggle model paths ────────────────────────────────────────────────────────
-# Dataset "best path" is mounted at /kaggle/input/best-path/
-ROAD_WEIGHTS      = '/kaggle/input/best-path/road_model_best.pth'
-LANDCOVER_WEIGHTS = '/kaggle/input/best-path/landcover_best.pth'
-BUILDING_WEIGHTS  = '/kaggle/input/best-path/building_model_best.pth'
+# Dataset "best path" (ayushks07) is mounted at /kaggle/input/datasets/ayushks07/best-path/
+ROAD_WEIGHTS      = '/kaggle/input/datasets/ayushks07/best-path/road_model_best.pth'
+LANDCOVER_WEIGHTS = '/kaggle/input/datasets/ayushks07/best-path/landcover_best.pth'
+BUILDING_WEIGHTS  = '/kaggle/input/datasets/ayushks07/best-path/building_model_best.pth'
 RESULTS_DIR       = '/kaggle/working/results'
 
 # Building detection threshold (lower than road/LC due to fine footprints)
@@ -65,9 +65,12 @@ def _load_model(model_type: str, device: torch.device):
         raise FileNotFoundError(f"Weights not found at: {weights_path}")
 
     state = torch.load(weights_path, map_location=device, weights_only=False)
-    # Handle both plain state_dict and wrapped checkpoint dicts
+    # Handle plain state_dict, 'model_state' (road/inpainting/building), and
+    # 'model_state_dict' (landcover — train_landcover.py naming convention)
     if isinstance(state, dict) and 'model_state' in state:
         model.load_state_dict(state['model_state'])
+    elif isinstance(state, dict) and 'model_state_dict' in state:
+        model.load_state_dict(state['model_state_dict'])
     else:
         model.load_state_dict(state)
 

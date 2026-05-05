@@ -14,7 +14,7 @@ import argparse
 import numpy as np
 import cv2
 import torch
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 
 from inpainting_model import get_inpainting_model
 
@@ -88,7 +88,7 @@ def infer_single(model:         torch.nn.Module,
     h_t = torch.from_numpy(hole_mask).unsqueeze(0).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        with autocast():
+        with autocast('cuda' if device.type == 'cuda' else 'cpu'):
             pred = model(c_t, h_t)   # (1, 1, H, W)
 
     prob   = pred.squeeze().cpu().numpy()           # (H, W)
@@ -171,7 +171,7 @@ def infer_tiled(model:      torch.nn.Module,
             h_t = torch.from_numpy(tile_h).unsqueeze(0).unsqueeze(0).to(device)
 
             with torch.no_grad():
-                with autocast():
+                with autocast('cuda' if device.type == 'cuda' else 'cpu'):
                     pred = model(c_t, h_t)   # (1, 1, 512, 512)
 
             prob = pred.squeeze().cpu().numpy().astype(np.float64)   # (512, 512)

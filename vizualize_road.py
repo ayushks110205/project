@@ -24,7 +24,7 @@ import matplotlib
 matplotlib.use('Agg')   # Non-interactive backend — safe for Colab & headless servers
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 
 # ── Local imports ─────────────────────────────────────────────────────────────
 from dataset import get_road_splits, val_transform
@@ -162,7 +162,7 @@ def visualise_road(model_path: str,
         # Inference
         input_batch = img_tensor.unsqueeze(0).to(device, non_blocking=True)
         with torch.no_grad():
-            with autocast():
+            with autocast('cuda' if device.type == 'cuda' else 'cpu'):
                 output = model(input_batch)
         prob_map    = torch.sigmoid(output).squeeze().cpu().numpy()   # [H, W]
         binary_pred = (prob_map > threshold).astype(np.uint8)

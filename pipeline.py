@@ -36,7 +36,7 @@ import numpy as np
 import cv2
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -50,11 +50,11 @@ from inpainting_model  import get_inpainting_model
 from infer_inpainting  import auto_detect_holes
 
 # ── Kaggle dataset paths ────────────────────────────────────────────────────────
-# Dataset "best path" is mounted at /kaggle/input/best-path/
-_W_ROAD     = '/kaggle/input/best-path/road_model_best.pth'
-_W_INPAINT  = '/kaggle/input/best-path/inpainting_best.pth'
-_W_LC       = '/kaggle/input/best-path/landcover_best.pth'
-_W_BUILDING = '/kaggle/input/best-path/building_model_best.pth'
+# Dataset "best path" (ayushks07) is mounted at /kaggle/input/datasets/ayushks07/best-path/
+_W_ROAD     = '/kaggle/input/datasets/ayushks07/best-path/road_model_best.pth'
+_W_INPAINT  = '/kaggle/input/datasets/ayushks07/best-path/inpainting_best.pth'
+_W_LC       = '/kaggle/input/datasets/ayushks07/best-path/landcover_best.pth'
+_W_BUILDING = '/kaggle/input/datasets/ayushks07/best-path/building_model_best.pth'
 _RESULTS    = '/kaggle/working/results/pipeline'
 
 # ImageNet normalisation (must match dataset.py val_transform)
@@ -228,7 +228,7 @@ class RoadInpaintingPipeline:
 
         # ── Step 2: Stage 1 — Extract road mask ───────────────────────────────
         with torch.no_grad():
-            with autocast():
+            with autocast('cuda' if self.device.type == 'cuda' else 'cpu'):
                 stage1_logits = self.stage1(img_tensor)   # (1, 1, 512, 512)
 
         stage1_prob = torch.sigmoid(stage1_logits).squeeze().cpu().numpy()
@@ -258,7 +258,7 @@ class RoadInpaintingPipeline:
         # h_t : (1, 1, 512, 512)
 
         with torch.no_grad():
-            with autocast():
+            with autocast('cuda' if self.device.type == 'cuda' else 'cpu'):
                 stage2_pred = self.stage2(c_t, h_t)   # (1, 1, 512, 512)
 
         stage2_prob = stage2_pred.squeeze().cpu().numpy()   # (512, 512)
@@ -372,8 +372,13 @@ class SatellitePipeline:
         def _load(model, path, label):
             state = torch.load(path, map_location=self.device, weights_only=False)
             if isinstance(state, dict) and 'model_state' in state:
+                # Road / Inpainting / Building checkpoint format
                 model.load_state_dict(state['model_state'])
+            elif isinstance(state, dict) and 'model_state_dict' in state:
+                # Land Cover checkpoint format (train_landcover.py)
+                model.load_state_dict(state['model_state_dict'])
             else:
+                # Plain state_dict saved directly
                 model.load_state_dict(state)
             model.to(self.device).eval()
             print(f"  ✅ {label}  ←  {path}")
@@ -443,7 +448,7 @@ class SatellitePipeline:
         t512 = t512.to(self.device)
 
         with torch.no_grad():
-            with autocast():
+            with autocast('cuda' if self.device.type == 'cuda' else 'cpu'):
                 road_logits = self.road_model(t512)
         road_prob = torch.sigmoid(road_logits).squeeze().cpu().numpy()
         road_bin  = (road_prob > self.road_thr).astype(np.float32)
@@ -460,7 +465,7 @@ class SatellitePipeline:
         h_t = torch.from_numpy(hole_mask).unsqueeze(0).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            with autocast():
+            with autocast('cuda' if self.device.type == 'cuda' else 'cpu'):
                 inpaint_out = self.inpaint_model(c_t, h_t)
         inpaint_bin = (inpaint_out.squeeze().cpu().numpy() > self.road_thr).astype(np.float32)
         road_final  = inpaint_bin * (1 - hole_mask) + road_bin * hole_mask
@@ -468,7 +473,7 @@ class SatellitePipeline:
 
         # ── Stage 3: Land cover ───────────────────────────────────────────────
         with torch.no_grad():
-            with autocast():
+            with autocast('cuda' if self.device.type == 'cuda' else 'cpu'):
                 lc_logits = self.lc_model(t512)
         lc_ids  = torch.argmax(lc_logits, dim=1).squeeze().cpu().numpy().astype(np.int32)
         lc_rgb  = _LC_COLORS[lc_ids]               # (512,512,3) uint8
@@ -477,7 +482,7 @@ class SatellitePipeline:
         # ── Stage 4: Building detection ───────────────────────────────────────
         t640 = self._load_image_640(image_path).to(self.device)
         with torch.no_grad():
-            with autocast():
+            with autocast('cuda' if self.device.type == 'cuda' else 'cpu'):
                 build_logits = self.build_model(t640)
         build_prob = torch.sigmoid(build_logits).squeeze().cpu().numpy()
         build_bin  = (build_prob > self.build_thr).astype(np.float32)

@@ -26,7 +26,14 @@ from models import get_landcover_model
 DATASET_BASE = '/kaggle/input/datasets/balraj98/deepglobe-land-cover-classification-dataset'
 IMAGE_DIR    = f'{DATASET_BASE}/train'
 MASK_DIR     = f'{DATASET_BASE}/train'
-MODEL_PATH   = '/kaggle/input/datasets/ayushks07/best-path-for-landcover/landcover_best (1).pth'
+
+# Model weights — try the uploaded 'best-path' dataset first,
+# then fall back to /kaggle/working/ if evaluating right after training.
+_MODEL_CANDIDATES = [
+    '/kaggle/input/datasets/ayushks07/best-path/landcover_best.pth',
+    '/kaggle/working/landcover_best.pth',
+]
+MODEL_PATH   = next((p for p in _MODEL_CANDIDATES if os.path.exists(p)), _MODEL_CANDIDATES[0])
 RESULTS_DIR  = '/kaggle/working/results/landcover_eval'
 
 NUM_CLASSES = 7
@@ -52,11 +59,17 @@ print(f"📂 Val samples: {len(val_ds)}")
 # Model
 # ─────────────────────────────────────────────────────────────────────────────
 model = get_landcover_model().to(device)
-ckpt  = torch.load(MODEL_PATH, map_location=device)
-model.load_state_dict(ckpt['model_state_dict'])
+ckpt  = torch.load(MODEL_PATH, map_location=device, weights_only=False)
+# Handle both full checkpoint format ('model_state_dict') and plain state_dict
+if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+    model.load_state_dict(ckpt['model_state_dict'])
+elif isinstance(ckpt, dict) and 'model_state' in ckpt:
+    model.load_state_dict(ckpt['model_state'])
+else:
+    model.load_state_dict(ckpt)
 model.eval()
 print(f"✅ Loaded model from: {MODEL_PATH}")
-if 'best_miou' in ckpt:
+if isinstance(ckpt, dict) and 'best_miou' in ckpt:
     print(f"   Checkpoint best val mIoU: {ckpt['best_miou']:.4f}")
 
 # ─────────────────────────────────────────────────────────────────────────────

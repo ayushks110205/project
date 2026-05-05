@@ -37,7 +37,7 @@ import torch
 import torch.optim as optim
 import numpy as np
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+import torch.amp
 from tqdm import tqdm
 
 # ── Local imports ─────────────────────────────────────────────────────────────

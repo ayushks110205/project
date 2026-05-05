@@ -13,7 +13,7 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from tqdm import tqdm
 
 # ── Local imports ─────────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ def run_evaluation(model_path: str,
         for images, masks in tqdm(val_loader, desc="Evaluating", unit='batch'):
             images = images.to(device, non_blocking=True)
 
-            with autocast():
+            with autocast('cuda' if device.type == 'cuda' else 'cpu'):
                 outputs = model(images)
 
             preds_np   = torch.sigmoid(outputs).squeeze(1).cpu().numpy()
