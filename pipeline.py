@@ -316,6 +316,18 @@ from models  import get_landcover_model, get_building_model
 from dataset import building_val_transform
 from PIL     import Image
 
+# ── Tier 1 Road Intelligence Layer ──────────────────────────────────────────
+# Lazy imports — only loaded when run_tier1() is called so the pipeline
+# works even if skimage / sklearn are not installed.
+_TIER1_AVAILABLE = False
+try:
+    from road_width          import RoadWidthEstimator
+    from road_type_classifier import RoadTypeClassifier
+    from vizualize_road_tier1 import save_tier1_figure
+    _TIER1_AVAILABLE = True
+except ImportError:
+    pass
+
 
 # Land cover colour palette (RGB) — matches DeepGlobe label specification
 _LC_COLORS = np.array([
@@ -547,6 +559,84 @@ class SatellitePipeline:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print(f"🖼️  Pipeline figure → {save_path}")
+
+    # ── Tier 1 Road Intelligence ──────────────────────────────────────────────
+
+    def run_tier1(self,
+                  image_np:     np.ndarray,
+                  road_mask_np: np.ndarray) -> dict:
+        """
+        Run the Tier 1 Road Intelligence Layer on top of an existing Stage 1
+        binary road mask.
+
+        Executes Module 1 (road width estimation) and Module 2 (road surface
+        type classification) in sequence.  No file I/O is performed internally;
+        all inputs and outputs are pure numpy arrays.
+
+        Args:
+            image_np     : (H, W, 3) uint8 RGB satellite image — must be the
+                           same spatial resolution as *road_mask_np*.
+            road_mask_np : (H, W) uint8 binary road mask (values 0/255) as
+                           produced by Stage 1 of this pipeline.
+
+        Returns:
+            tier1_result : dict with keys:
+
+                ``width_result``
+                    :class:`road_width.RoadWidthResult` dataclass containing:
+                    skeleton, width_px, width_m, road_type_map, summary_stats,
+                    class_distribution, width_heatmap_rgb, is_empty.
+
+                ``type_result``
+                    dict from :class:`road_type_classifier.RoadTypeClassifier`
+                    containing: surface_map, confidence_map, summary,
+                    overlay_rgb, skeleton, is_empty.
+
+                ``summary``
+                    Compact human-readable summary dict combining highlights
+                    from both modules.
+
+        Raises:
+            RuntimeError : If the Tier 1 modules could not be imported
+                           (skimage / sklearn missing from environment).
+        """
+        if not _TIER1_AVAILABLE:
+            raise RuntimeError(
+                "Tier 1 modules unavailable.  "
+                "Ensure scikit-image and scikit-learn are installed:"
+                "  pip install scikit-image scikit-learn")
+
+        # ── Module 1: Road Width Estimation ───────────────────────────────────
+        width_est    = RoadWidthEstimator()
+        width_result = width_est.analyse(road_mask_np)
+        print(f"  Tier1-M1 ✓  skeleton px: "
+              f"{width_result.skeleton.sum():,} | "
+              f"mean width: {width_result.summary_stats['mean_m']:.2f} m")
+
+        # ── Module 2: Road Surface Type Classifier ────────────────────────────
+        classifier  = RoadTypeClassifier()
+        type_result = classifier.predict(
+            image_np, road_mask_np, width_result=width_result)
+        print(f"  Tier1-M2 ✓  dominant surface: "
+              f"{type_result['summary']['dominant_type']} | "
+              f"sampled: {type_result['summary']['n_sampled_pts']} pts")
+
+        # ── Combined summary ──────────────────────────────────────────────────
+        summary = {
+            'mean_width_m':      width_result.summary_stats['mean_m'],
+            'median_width_m':    width_result.summary_stats['median_m'],
+            'width_class_dist':  width_result.class_distribution,
+            'dominant_surface':  type_result['summary']['dominant_type'],
+            'surface_counts':    type_result['summary']['type_counts'],
+            'skeleton_pixels':   int(width_result.skeleton.sum()),
+            'is_empty':          width_result.is_empty,
+        }
+
+        return {
+            'width_result': width_result,
+            'type_result':  type_result,
+            'summary':      summary,
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
