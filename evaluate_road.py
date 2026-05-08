@@ -67,8 +67,8 @@ def compute_metrics(pred_prob: np.ndarray, target: np.ndarray,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_evaluation(model_path: str,
-                   image_dir: str = '/kaggle/input/datasets/ayushsingh110205/deep-globe-extraction-dataset/train',
-                   mask_dir:  str = '/kaggle/input/datasets/ayushsingh110205/deep-globe-extraction-dataset/train',
+                   image_dir: str = '/kaggle/input/datasets/balraj98/deepglobe-road-extraction-dataset/train',
+                   mask_dir:  str = '/kaggle/input/datasets/balraj98/deepglobe-road-extraction-dataset/train',
                    val_ratio: float = 0.20,
                    threshold: float = 0.50,
                    top_k:     int   = 5):

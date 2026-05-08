@@ -104,7 +104,7 @@ def save_visual(complete: np.ndarray, corrupted: np.ndarray,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_evaluation(model_path: str,
-                   mask_dir: str = '/kaggle/input/datasets/ayushsingh110205/deep-globe-extraction-dataset/train',
+                   mask_dir: str = '/kaggle/input/datasets/balraj98/deepglobe-road-extraction-dataset/train',
                    val_ratio: float = 0.20, threshold: float = 0.50,
                    n_visuals: int = 5,
                    save_dir: str = '/kaggle/working/results/inpainting_eval'):
