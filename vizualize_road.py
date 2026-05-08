@@ -27,9 +27,9 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from torch.amp import autocast
 
-# ── Local imports ─────────────────────────────────────────────────────────────
-from dataset import get_road_splits, val_transform
-from models  import get_road_model
+# Pipeline imports are LAZY (loaded inside visualise_road()) to prevent the
+# albumentations → scipy → numpy version-conflict crash on `import vizualize_road`.
+# save_road_viz() works with zero pipeline imports — safe for notebook smoke tests.
 
 # ── Tier 1 modules (optional — graceful fallback if unavailable) ──────────────
 try:
@@ -192,6 +192,11 @@ def visualise_road(model_path: str,
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"🔍 Visualisation | Device: {device} | Tier1={'ON' if _TIER1_OK else 'OFF'}")
 
+    # Lazy imports — safe because dataset.py pulls in albumentations which may
+    # conflict with scipy/numpy at module load time in some Kaggle environments.
+    from dataset import get_road_splits  # noqa: PLC0415
+    from models  import get_road_model   # noqa: PLC0415
+
     # ── Load model ────────────────────────────────────────────────────────────
     if not os.path.exists(model_path):
         print(f"❌ Model not found: {model_path}")
@@ -336,7 +341,112 @@ def visualise_road(model_path: str,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Section 6 ▸ Entry Point
+# Section 6 ▸ Lightweight array-in / PNG-out helper (notebook / smoke-test safe)
+# No model loading, no dataset imports — just numpy arrays → 8-panel figure.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_road_viz(satellite_np:    np.ndarray,
+                 gt_mask:         np.ndarray,
+                 pred_mask:       np.ndarray,
+                 confidence_map:  np.ndarray,
+                 save_path:       str) -> None:
+    """
+    Produce and save an 8-panel Tier-1 diagnostic figure from pre-computed arrays.
+
+    This function requires NO model and NO dataset — safe to call in any
+    notebook without triggering the albumentations/scipy import chain.
+
+    Args:
+        satellite_np   : (H, W, 3) uint8 RGB satellite image.
+        gt_mask        : (H, W) uint8 {0, 1} ground-truth road mask.
+        pred_mask      : (H, W) uint8 {0, 1} binary prediction.
+        confidence_map : (H, W) float32 in [0, 1] model probability map.
+        save_path      : full path to output PNG file.
+
+    Panels:
+        1  Input Satellite       5  TP/FP/FN Overlay
+        2  Ground Truth          6  Width Heatmap   [Tier 1 – M1]
+        3  Confidence Heatmap    7  Surface Overlay  [Tier 1 – M2]
+        4  Binary Prediction     8  Route Overlay    [Tier 1 – M3]
+    """
+    H, W = gt_mask.shape[:2]
+    os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+
+    # Normalise satellite to float [0, 1]
+    rgb_float = (satellite_np.astype(np.float32) / 255.0
+                 if satellite_np.dtype == np.uint8 else satellite_np)
+    rgb_float = np.clip(rgb_float, 0.0, 1.0)
+
+    # pred_mask to 0/255 for Tier 1 modules
+    pred_u8 = (pred_mask > 0).astype(np.uint8) * 255
+
+    iou, dice = _iou_dice(pred_mask.astype(np.uint8), gt_mask.astype(np.uint8))
+    overlay_fp = build_overlay(rgb_float,
+                               (pred_mask > 0).astype(np.uint8),
+                               (gt_mask  > 0).astype(np.uint8))
+
+    # ── Tier 1 ────────────────────────────────────────────────────────────────
+    sat_u8 = (rgb_float * 255).astype(np.uint8)
+    mean_width_m, dominant_surf = 0.0, 'n/a'
+    width_result = type_result = route_overlay = None
+
+    if _TIER1_OK:
+        (width_result, type_result,
+         route_overlay, mean_width_m, dominant_surf) = _run_tier1(
+            pred_u8, sat_u8, H, W)
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(1, 8, figsize=(32, 4))
+    fig.patch.set_facecolor('#1a1a2e')
+
+    title = (f"IoU={iou:.4f}  Dice={dice:.4f}"
+             f"  |  Width={mean_width_m:.1f}m  Surface={dominant_surf}")
+    fig.suptitle(title, fontsize=11, fontweight='bold', color='white', y=1.01)
+
+    def _s(ax, t):
+        ax.set_title(t, fontsize=9, fontweight='bold', color='#e0e0e0', pad=4)
+        ax.axis('off')
+
+    axes[0].imshow(rgb_float);                                        _s(axes[0], 'Input Satellite')
+    axes[1].imshow(gt_mask,    cmap='gray', vmin=0, vmax=1);         _s(axes[1], 'Ground Truth')
+    im = axes[2].imshow(confidence_map, cmap='magma', vmin=0, vmax=1)
+    plt.colorbar(im, ax=axes[2], fraction=0.046, pad=0.04);          _s(axes[2], 'Confidence Heatmap')
+    axes[3].imshow(pred_mask,  cmap='gray', vmin=0, vmax=1);         _s(axes[3], 'Binary Prediction')
+    axes[4].imshow(overlay_fp);
+    legend = [
+        mpatches.Patch(color=(0.0, 0.78, 0.0), label='TP'),
+        mpatches.Patch(color=(0.86, 0.0, 0.0), label='FP'),
+        mpatches.Patch(color=(0.0, 0.0, 0.86), label='FN'),
+    ]
+    axes[4].legend(handles=legend, loc='lower left', fontsize=7, framealpha=0.7)
+    _s(axes[4], 'TP/FP/FN Overlay')
+
+    if width_result is not None and not width_result.is_empty:
+        im6 = axes[5].imshow(width_result.width_heatmap_rgb)
+        plt.colorbar(im6, ax=axes[5], fraction=0.046, pad=0.04, label='Width (m)')
+        _s(axes[5], f'Width Heatmap  μ={mean_width_m:.1f}m')
+    else:
+        _black_panel(H, W, 'No roads\ndetected', axes[5]);           _s(axes[5], 'Width Heatmap')
+
+    if type_result is not None and not type_result.get('is_empty', True):
+        axes[6].imshow(type_result['overlay_rgb']);                   _s(axes[6], f'Surface [{dominant_surf}]')
+    else:
+        _black_panel(H, W, 'Surface N/A', axes[6]);                  _s(axes[6], 'Surface Overlay')
+
+    if route_overlay is not None:
+        axes[7].imshow(route_overlay);                                _s(axes[7], 'Route [car]')
+    else:
+        _black_panel(H, W, 'No route\nfound', axes[7]);              _s(axes[7], 'Route Overlay')
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight',
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print(f"✅ Saved → {save_path}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Section 7 ▸ Entry Point
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
