@@ -94,7 +94,7 @@ CHECKPOINT_EVERY    = 5
 # Set to a .pth checkpoint path to resume training from that epoch.
 # Set to None to start fresh.
 # Example (Kaggle): RESUME_FROM_CKPT = '/kaggle/input/road-ckpts/road_ckpt_ep20.pth'
-RESUME_FROM_CKPT = None
+RESUME_FROM_CKPT = '/kaggle/input/datasets/ayushsingh110205/newly-made-for-improved-road-training/road_ckpt_ep35.pth'
 
 
 # =============================================================================
@@ -233,9 +233,19 @@ def train_road(epochs: int = NUM_EPOCHS):
         history           = ckpt.get('history', history)
         start_epoch       = ckpt['epoch'] + 1  # resume from NEXT epoch
         epochs_no_improve = 0  # reset patience — don't carry stale count
-        # Re-fast-forward the scheduler to match the restored epoch
-        for _ in range(ckpt['epoch']):
-            scheduler.step()
+        # Restore scheduler state directly — OneCycleLR steps per BATCH (not per
+        # epoch), so the old fast-forward loop (range(epoch) steps) was wrong by
+        # a factor of steps_per_epoch and would produce completely incorrect LR.
+        if 'scheduler_state' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler_state'])
+            print(f"   🔄 Scheduler state restored (last_epoch={scheduler.last_epoch})")
+        else:
+            # Fallback for old checkpoints that didn't save scheduler_state:
+            # fast-forward correctly by stepping steps_per_epoch × saved_epoch times.
+            steps_done = ckpt['epoch'] * len(train_loader)
+            print(f"   ⚠️  No scheduler_state in ckpt — fast-forwarding {steps_done} steps")
+            for _ in range(steps_done):
+                scheduler.step()
         print(f"   ✅ Restored epoch {ckpt['epoch']} | best_val_loss={best_val_loss:.4f}")
         print(f"   ▶  Continuing from epoch {start_epoch}/{epochs}\n")
         del ckpt
@@ -349,11 +359,12 @@ def train_road(epochs: int = NUM_EPOCHS):
         if epoch % CHECKPOINT_EVERY == 0:
             ckpt_path = os.path.join(CKPT_DIR, f'road_ckpt_ep{epoch:02d}.pth')
             torch.save({
-                'epoch':         epoch,
-                'model_state':   model.state_dict(),
-                'optim_state':   optimizer.state_dict(),
-                'best_val_loss': best_val_loss,
-                'history':       history,
+                'epoch':           epoch,
+                'model_state':     model.state_dict(),
+                'optim_state':     optimizer.state_dict(),
+                'scheduler_state': scheduler.state_dict(),  # exact LR state for resume
+                'best_val_loss':   best_val_loss,
+                'history':         history,
             }, ckpt_path)
             print(f"   💾 Backup → {ckpt_path}")
 
