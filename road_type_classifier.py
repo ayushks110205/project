@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from scipy.spatial import cKDTree
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from skimage.feature import graycomatrix, graycoprops
@@ -470,6 +471,26 @@ class RoadTypeClassifier:
             surface_map[r, c]    = label
             confidence_map[r, c] = conf
             overlay_rgb[r, c]    = _SURFACE_COLORS[label]
+
+        # ── KDTree propagation: label ALL skeleton pixels ─────────────────────
+        # The sampling loop above only labelled `points` (≤ n_samples).
+        # Build a KDTree on those sampled coords and propagate their label
+        # to every remaining skeleton pixel via nearest-neighbour lookup.
+        all_skel_rows, all_skel_cols = np.where(skeleton)
+        all_skel_pts = np.stack(
+            [all_skel_rows, all_skel_cols], axis=1).astype(np.float32)
+
+        tree = cKDTree(points.astype(np.float32))
+        _, nn_idx = tree.query(all_skel_pts, k=1)
+
+        for i, (r, c) in enumerate(zip(all_skel_rows, all_skel_cols)):
+            if surface_map[r, c] == '':          # not already labelled
+                src_r, src_c = points[nn_idx[i]]
+                label = surface_map[src_r, src_c]
+                if label != '':
+                    surface_map[r, c]    = label
+                    overlay_rgb[r, c]    = _SURFACE_COLORS[label]
+                    confidence_map[r, c] = confidence_map[src_r, src_c]
 
         # Summary statistics
         labels_on_skel = surface_map[skeleton]
