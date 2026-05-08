@@ -51,7 +51,7 @@ from inpainting_losses  import InpaintingLoss
 # =============================================================================
 
 # Kaggle dataset path  (⚠ update slug if yours differs)
-BASE_PATH   = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset'
+BASE_PATH   = '/kaggle/input/datasets/ayushsingh110205/deep-globe-extraction-dataset'
 MASK_DIR    = f'{BASE_PATH}/train'
 IMAGE_SIZE  = 512
 
@@ -77,9 +77,9 @@ CHECKPOINT_EVERY    = 5
 #
 # ✅ This notebook mounts all datasets under /kaggle/input/datasets/<username>/
 #    Matches the existing BASE_PATH pattern:
-#    /kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset
-#    So "best path" dataset → /kaggle/input/datasets/ayushks07/best-path
-RESUME_CKPT_DIR = '/kaggle/input/datasets/ayushks07/best-path'
+#    /kaggle/input/datasets/ayushsingh110205/deep-globe-extraction-dataset
+#    So "best path" dataset → /kaggle/input/datasets/ayushsingh110205/best-path
+RESUME_CKPT_DIR = '/kaggle/input/datasets/ayushsingh110205/best-path'
 
 # Loss weights (must match InpaintingLoss defaults for clarity)
 LAMBDA_VALID = 1.0

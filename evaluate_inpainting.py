@@ -104,7 +104,7 @@ def save_visual(complete: np.ndarray, corrupted: np.ndarray,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_evaluation(model_path: str,
-                   mask_dir: str = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
+                   mask_dir: str = '/kaggle/input/datasets/ayushsingh110205/deep-globe-extraction-dataset/train',
                    val_ratio: float = 0.20, threshold: float = 0.50,
                    n_visuals: int = 5,
                    save_dir: str = '/kaggle/working/results/inpainting_eval'):
@@ -201,7 +201,7 @@ if __name__ == '__main__':
     # Check multiple candidate paths — working dir first, then uploaded dataset
     model_candidates = [
         '/kaggle/working/inpainting_best.pth',
-        '/kaggle/input/datasets/ayushks07/best-path/inpainting_best.pth',
+        '/kaggle/input/datasets/ayushsingh110205/best-path/inpainting_best.pth',
     ]
     mp = next((p for p in model_candidates if os.path.exists(p)), None)
     if mp is None:

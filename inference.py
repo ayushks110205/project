@@ -35,10 +35,10 @@ except ImportError:
 # =============================================================================
 
 # ── Kaggle model paths ────────────────────────────────────────────────────────
-# Dataset "best path" (ayushks07) is mounted at /kaggle/input/datasets/ayushks07/best-path/
-ROAD_WEIGHTS      = '/kaggle/input/datasets/ayushks07/best-path/road_model_best.pth'
-LANDCOVER_WEIGHTS = '/kaggle/input/datasets/ayushks07/best-path/landcover_best.pth'
-BUILDING_WEIGHTS  = '/kaggle/input/datasets/ayushks07/best-path/building_model_best.pth'
+# Dataset "best path" (ayushsingh110205) is mounted at /kaggle/input/datasets/ayushsingh110205/best-path/
+ROAD_WEIGHTS      = '/kaggle/input/datasets/ayushsingh110205/best-path/road_model_best.pth'
+LANDCOVER_WEIGHTS = '/kaggle/input/datasets/ayushsingh110205/best-path/landcover_best.pth'
+BUILDING_WEIGHTS  = '/kaggle/input/datasets/ayushsingh110205/best-path/building_model_best.pth'
 RESULTS_DIR       = '/kaggle/working/results'
 
 # Building detection threshold (lower than road/LC due to fine footprints)

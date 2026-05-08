@@ -69,7 +69,7 @@ from models import get_road_model
 # Section 1 ▸ Configuration
 # =============================================================================
 
-BASE_PATH  = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset'
+BASE_PATH  = '/kaggle/input/datasets/ayushsingh110205/deep-globe-extraction-dataset'
 IMAGE_DIR  = f'{BASE_PATH}/train'
 MASK_DIR   = f'{BASE_PATH}/train'
 

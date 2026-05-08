@@ -106,8 +106,8 @@ def _iou_dice(pred_binary: np.ndarray, gt_binary: np.ndarray):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def visualise_road(model_path: str,
-                   image_dir:  str = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
-                   mask_dir:   str = '/kaggle/input/datasets/ayushks07/deep-globe-extraction-dataset/train',
+                   image_dir:  str = '/kaggle/input/datasets/ayushsingh110205/deep-globe-extraction-dataset/train',
+                   mask_dir:   str = '/kaggle/input/datasets/ayushsingh110205/deep-globe-extraction-dataset/train',
                    val_ratio:  float = 0.20,
                    n_samples:  int   = 5,
                    threshold:  float = 0.50,

@@ -48,7 +48,7 @@ CKPT_DIR     = '/kaggle/working/landcover_ckpts'
 # • Default : CKPT_DIR (current session checkpoints, if they exist)
 # • Override: point at an uploaded Kaggle dataset containing .pth files
 # • Disable : set to None to always start from scratch
-RESUME_CKPT_DIR = '/kaggle/input/datasets/ayushks07/best-path'
+RESUME_CKPT_DIR = '/kaggle/input/datasets/ayushsingh110205/best-path'
 NUM_CLASSES   = 7
 EPOCHS        = 40
 # P100 16 GB VRAM (single GPU). DeepLabV3+ ResNet34 at 512×512 fp16 with

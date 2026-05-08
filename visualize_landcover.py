@@ -33,7 +33,7 @@ MASK_DIR     = f'{DATASET_BASE}/train'
 # Model weights — try the uploaded 'best-path' dataset first,
 # then fall back to /kaggle/working/ if evaluating right after training.
 _MODEL_CANDIDATES = [
-    '/kaggle/input/datasets/ayushks07/best-path/landcover_best.pth',
+    '/kaggle/input/datasets/ayushsingh110205/best-path/landcover_best.pth',
     '/kaggle/working/landcover_best.pth',
 ]
 MODEL_PATH   = next((p for p in _MODEL_CANDIDATES if os.path.exists(p)), _MODEL_CANDIDATES[0])
