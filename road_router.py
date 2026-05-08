@@ -134,6 +134,55 @@ class RouteResult:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Endpoint picker (module-level helper, used by visualisers)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _pick_route_endpoints(
+        skeleton: np.ndarray,
+        max_sample: int = 500,
+        rng_seed: int = 0,
+) -> Tuple[Optional[Tuple[int, int]], Optional[Tuple[int, int]]]:
+    """
+    Find the two skeleton pixels that are furthest apart (Euclidean distance).
+
+    For large skeletons (> *max_sample* pixels), a random subsample of
+    *max_sample* points is used to avoid O(N²) memory allocation.
+
+    Args:
+        skeleton   : (H, W) bool skeleton array.
+        max_sample : maximum number of points to include in the distance matrix.
+        rng_seed   : seed for reproducible subsampling.
+
+    Returns:
+        ``(src_rc, dst_rc)`` as ``(row, col)`` int tuples, or
+        ``(None, None)`` if the skeleton has fewer than 2 pixels.
+    """
+    rows, cols = np.where(skeleton)
+    N = len(rows)
+
+    if N < 2:
+        return None, None
+
+    pts = np.stack([rows, cols], axis=1).astype(np.float32)  # (N, 2)
+
+    if N > max_sample:
+        rng = np.random.default_rng(rng_seed)
+        idx = rng.choice(N, size=max_sample, replace=False)
+        pts = pts[idx]
+
+    # Pairwise distance matrix on the (possibly subsampled) points
+    diff      = pts[:, None, :] - pts[None, :, :]  # (M, M, 2)
+    dist_mat  = np.sqrt((diff ** 2).sum(axis=-1))  # (M, M)
+
+    flat_idx  = int(np.argmax(dist_mat))
+    i, j      = divmod(flat_idx, len(pts))
+
+    src_rc = (int(pts[i, 0]), int(pts[i, 1]))
+    dst_rc = (int(pts[j, 0]), int(pts[j, 1]))
+    return src_rc, dst_rc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Router
 # ─────────────────────────────────────────────────────────────────────────────
 

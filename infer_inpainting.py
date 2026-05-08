@@ -14,9 +14,22 @@ import argparse
 import numpy as np
 import cv2
 import torch
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from torch.amp import autocast
 
 from inpainting_model import get_inpainting_model
+
+# ── Tier 1 modules (optional — graceful fallback) ─────────────────────────────
+try:
+    from road_width           import RoadWidthEstimator
+    from road_type_classifier  import RoadTypeClassifier
+    from road_router           import RoadRouter, _pick_route_endpoints
+    _TIER1_OK = True
+except ImportError as _e:
+    _TIER1_OK = False
+    print(f"[Tier1 WARNING] Tier 1 modules not importable: {_e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 1 ▸ Auto-detect Holes
@@ -294,8 +307,166 @@ def run_inference(model_path:      str,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CLI Entry Point
+# Section 5 ▸ Training-time 8-Panel Inpainting Visualiser
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _black_panel_inp(H: int, W: int, msg: str, ax) -> None:
+    """Fill *ax* with a black panel and centred white text."""
+    ax.imshow(np.zeros((H, W, 3), dtype=np.uint8))
+    ax.text(W / 2, H / 2, msg, color='white', fontsize=8,
+            ha='center', va='center',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#333333', alpha=0.8))
+    ax.axis('off')
+
+
+def visualise_inpainting(
+        original:      np.ndarray,
+        corrupted:     np.ndarray,
+        prediction:    np.ndarray,
+        ground_truth:  np.ndarray,
+        hole_iou:      float,
+        full_iou:      float,
+        save_path:     str,
+        satellite_rgb: np.ndarray = None,
+        connectivity:  float = 0.0) -> None:
+    """
+    Save an 8-panel inpainting diagnostic figure.
+
+    Panels:
+        1. Original Mask            5. Error Map
+        2. Corrupted Mask           6. Width Heatmap  [Tier 1 – M1]
+        3. Inpainted Prediction     7. Surface Overlay[Tier 1 – M2]
+        4. Ground Truth             8. Route Overlay  [Tier 1 – M3]
+
+    Args:
+        original      : (H, W) float32 {0,1} complete original mask.
+        corrupted     : (H, W) float32 {0,1} mask with holes.
+        prediction    : (H, W) float32 {0,1} inpainted prediction.
+        ground_truth  : (H, W) float32 {0,1} ground-truth mask.
+        hole_iou      : Hole-region IoU (from training loop).
+        full_iou      : Full-image IoU.
+        save_path     : Output PNG path.
+        satellite_rgb : optional (H, W, 3) uint8 RGB for Modules 2 & 3.
+                        If None, a grey canvas is used.
+        connectivity  : connectivity loss value (for title).
+    """
+    H, W = original.shape[:2]
+    os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+
+    # ── Tier 1 on the INPAINTED prediction ──────────────────────────────────
+    mean_width_m  = 0.0
+    dominant_surf = 'n/a'
+    width_result  = None
+    type_result   = None
+    route_overlay = None
+
+    if _TIER1_OK:
+        # Convert inpainted prediction to uint8 mask (0/255)
+        pred_mask_u8 = (prediction > 0.5).astype(np.uint8) * 255
+
+        # Satellite RGB: use provided or build grey placeholder
+        if satellite_rgb is not None:
+            sat_u8 = satellite_rgb.astype(np.uint8)
+        else:
+            grey = (original * 160).astype(np.uint8)
+            sat_u8 = np.stack([grey, grey, grey], axis=-1)
+
+        # Module 1 – Width
+        try:
+            est          = RoadWidthEstimator()
+            width_result = est.analyse(pred_mask_u8)
+            if not width_result.is_empty:
+                mean_width_m = width_result.summary_stats['mean_m']
+        except Exception as e:
+            print(f"[Tier1 WARNING] Module 1 (width): {e}")
+
+        # Module 2 – Surface
+        try:
+            clf         = RoadTypeClassifier()
+            type_result = clf.predict(sat_u8, pred_mask_u8,
+                                      width_result=width_result)
+            if type_result and not type_result.get('is_empty', True):
+                dominant_surf = type_result['summary']['dominant_type']
+        except Exception as e:
+            print(f"[Tier1 WARNING] Module 2 (surface): {e}")
+
+        # Module 3 – Route
+        try:
+            if (width_result is not None and not width_result.is_empty
+                    and type_result is not None):
+                src, dst = _pick_route_endpoints(width_result.skeleton)
+                if src is not None and dst is not None:
+                    router = RoadRouter(pred_mask_u8, width_result, type_result)
+                    route  = router.find_route(src, dst, vehicle_type='car',
+                                               satellite_rgb=sat_u8)
+                    route_overlay = route.route_overlay_rgb
+        except Exception as e:
+            print(f"[Tier1 WARNING] Module 3 (router): {e}")
+
+    # ── Error map (absolute difference) ─────────────────────────────────────
+    error_map = np.abs(prediction - ground_truth)
+
+    # ── 8-panel figure ───────────────────────────────────────────────────────
+    fig, axes = plt.subplots(1, 8, figsize=(32, 4))
+    fig.patch.set_facecolor('#1a1a2e')
+
+    title = (f"Hole IoU={hole_iou:.4f}  Full IoU={full_iou:.4f}"
+             f"  Conn={connectivity:.4f}"
+             f"  |  Width={mean_width_m:.1f}m  Surface={dominant_surf}")
+    fig.suptitle(title, fontsize=10, fontweight='bold', color='white', y=1.01)
+
+    def _style(ax, ttl):
+        ax.set_title(ttl, fontsize=8, fontweight='bold', color='#e0e0e0', pad=4)
+        ax.axis('off')
+
+    axes[0].imshow(original,   cmap='gray', vmin=0, vmax=1)
+    _style(axes[0], 'Original Mask')
+
+    axes[1].imshow(corrupted,  cmap='gray', vmin=0, vmax=1)
+    _style(axes[1], 'Corrupted Mask')
+
+    axes[2].imshow(prediction, cmap='gray', vmin=0, vmax=1)
+    _style(axes[2], 'Inpainted Prediction')
+
+    axes[3].imshow(ground_truth, cmap='gray', vmin=0, vmax=1)
+    _style(axes[3], 'Ground Truth')
+
+    im4 = axes[4].imshow(error_map, cmap='hot', vmin=0, vmax=1)
+    plt.colorbar(im4, ax=axes[4], fraction=0.046, pad=0.04)
+    _style(axes[4], 'Error Map')
+
+    # Panel 6 – Width heatmap
+    if width_result is not None and not width_result.is_empty:
+        im6 = axes[5].imshow(width_result.width_heatmap_rgb)
+        plt.colorbar(im6, ax=axes[5], fraction=0.046, pad=0.04, label='Width (m)')
+        _style(axes[5], f'Width Heatmap  μ={mean_width_m:.1f}m')
+    else:
+        _black_panel_inp(H, W, 'No roads\ndetected', axes[5])
+        _style(axes[5], 'Width Heatmap')
+
+    # Panel 7 – Surface overlay
+    if type_result is not None and not type_result.get('is_empty', True):
+        axes[6].imshow(type_result['overlay_rgb'])
+        _style(axes[6], f'Surface  [{dominant_surf}]')
+    else:
+        _black_panel_inp(H, W, 'Surface N/A', axes[6])
+        _style(axes[6], 'Surface Overlay')
+
+    # Panel 8 – Route overlay
+    if route_overlay is not None:
+        axes[7].imshow(route_overlay)
+        _style(axes[7], 'Route  [car · cyan]')
+    else:
+        _black_panel_inp(H, W, 'No route\nfound', axes[7])
+        _style(axes[7], 'Route Overlay')
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight',
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print(f"  💾 Inpainting viz → {save_path}")
+
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Stage 2 Road Mask Inpainting Inference')
