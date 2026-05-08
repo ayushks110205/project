@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -186,6 +187,8 @@ class RoadRouter:
         """
         Construct the base cost grid shared across all vehicle types.
 
+        Fully vectorised — no Python-level per-pixel loop.
+
         Cost at skeleton pixel (r, c):
             base_cost
             × (1 / (1 + width_m / width_cost_scale))   ← width reward
@@ -200,22 +203,28 @@ class RoadRouter:
         cfg  = self.cfg
         cost = np.full((H, W), cfg.off_road_cost, dtype=np.float64)
 
-        rows, cols = np.where(self.skeleton)
-        for r, c in zip(rows, cols):
-            w_m     = float(self.width_m[r, c])
-            surface = str(self.surface_map[r, c])
+        skel = self.skeleton
+        if not skel.any():
+            return cost
 
-            width_factor   = 1.0 / (1.0 + w_m / cfg.width_cost_scale)
-            surface_factor = cfg.surface_costs.get(surface, 1.5)
+        # ── Width factor (vectorised) ─────────────────────────────────────────
+        width_factor = 1.0 / (1.0 + self.width_m[skel] / cfg.width_cost_scale)
 
-            cost[r, c] = cfg.base_cost * width_factor * surface_factor
+        # ── Surface factor (vectorised lookup) ────────────────────────────────
+        surface_vals = self.surface_map[skel]          # 1-D object array of str
+        surface_factor = np.array(
+            [cfg.surface_costs.get(str(s), 1.5) for s in surface_vals],
+            dtype=np.float64)
 
+        cost[skel] = cfg.base_cost * width_factor * surface_factor
         return cost
 
     def _apply_vehicle_constraints(self,
                                    profile: VehicleProfile) -> np.ndarray:
         """
         Clone the base cost surface and apply vehicle-specific constraints.
+
+        Fully vectorised — no Python-level per-pixel loop.
 
         Pixels that violate minimum width requirements or surface restrictions
         for the given vehicle profile are raised to ``off_road_cost`` (impassable).
@@ -227,25 +236,30 @@ class RoadRouter:
             (H, W) float64 vehicle-adjusted cost surface.
         """
         cost = self._base_cost_surface.copy()
-        rows, cols = np.where(self.skeleton)
+        skel = self.skeleton
+        if not skel.any():
+            return cost
 
-        for r, c in zip(rows, cols):
-            w_m     = float(self.width_m[r, c])
-            surface = str(self.surface_map[r, c])
+        cfg = self.cfg
+        w_m_skel     = self.width_m[skel].astype(np.float64)
+        surface_skel = self.surface_map[skel]   # 1-D object array of str
 
-            # Width constraint
-            if w_m < profile.min_width_m:
-                cost[r, c] = self.cfg.off_road_cost
-                continue
+        # Boolean masks over skeleton pixels
+        too_narrow    = w_m_skel < profile.min_width_m
+        is_damaged    = np.array([str(s) == 'damaged' for s in surface_skel], dtype=bool)
+        is_unpaved    = np.array([str(s) == 'unpaved' for s in surface_skel], dtype=bool)
 
-            # Surface refusal
-            if profile.refuses_damaged and surface == 'damaged':
-                cost[r, c] = self.cfg.off_road_cost
-                continue
+        # Impassable mask: too narrow OR (refuses damaged AND is damaged)
+        blocked = too_narrow | (profile.refuses_damaged & is_damaged)
 
-            # Additional surface penalty multiplier
-            if profile.surface_penalty_mult != 1.0 and surface == 'unpaved':
-                cost[r, c] *= profile.surface_penalty_mult
+        # Apply block
+        rows, cols = np.where(skel)
+        cost[rows[blocked], cols[blocked]] = cfg.off_road_cost
+
+        # Apply surface penalty multiplier on unpaved pixels that are NOT blocked
+        if profile.surface_penalty_mult != 1.0:
+            apply_penalty = is_unpaved & ~blocked
+            cost[rows[apply_penalty], cols[apply_penalty]] *= profile.surface_penalty_mult
 
         return cost
 
@@ -360,14 +374,12 @@ class RoadRouter:
         path_widths = [float(self.width_m[r, c]) for r, c in path_arr]
         mean_width_m = float(np.mean(path_widths)) if path_widths else 0.0
 
-        # Dominant surface
-        path_surfaces = [str(self.surface_map[r, c]) for r, c in path_arr
-                         if str(self.surface_map[r, c]) != '']
-        if path_surfaces:
-            from collections import Counter
-            dominant_surface = Counter(path_surfaces).most_common(1)[0][0]
-        else:
-            dominant_surface = 'unknown'
+        # Dominant surface (vectorised)
+        path_pts     = np.array(path_arr, dtype=np.int32)
+        path_surfs   = self.surface_map[path_pts[:, 0], path_pts[:, 1]]
+        path_surfs   = [str(s) for s in path_surfs if str(s) != '']
+        dominant_surface = Counter(path_surfs).most_common(1)[0][0] \
+                           if path_surfs else 'unknown'
 
         # ── Overlay ───────────────────────────────────────────────────────────
         overlay = self._draw_route(path_arr, H, W, satellite_rgb, src_snap, dst_snap)

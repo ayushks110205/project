@@ -207,6 +207,8 @@ class RoadWidthEstimator:
         """
         Assign a road-type label to each skeleton pixel based on its width in metres.
 
+        Fully vectorised: uses boolean array masking instead of a per-pixel loop.
+
         Args:
             skeleton : (H, W) bool
             width_m  : (H, W) float32
@@ -216,23 +218,19 @@ class RoadWidthEstimator:
         """
         H, W = skeleton.shape
         road_type_map = np.full((H, W), '', dtype=object)
-
-        rows, cols = np.where(skeleton)
         cfg = self.cfg
 
-        for r, c in zip(rows, cols):
-            w = width_m[r, c]
-            if w < cfg.footpath_max_m:
-                label = 'footpath'
-            elif w < cfg.single_lane_max_m:
-                label = 'single_lane'
-            elif w < cfg.standard_max_m:
-                label = 'standard'
-            else:
-                label = 'highway'
-            road_type_map[r, c] = label
+        # Apply labels in reverse priority order so higher-priority labels
+        # overwrite lower-priority ones correctly.
+        road_type_map[skeleton & (width_m < cfg.footpath_max_m)]    = 'footpath'
+        road_type_map[skeleton & (width_m >= cfg.footpath_max_m)
+                               & (width_m < cfg.single_lane_max_m)] = 'single_lane'
+        road_type_map[skeleton & (width_m >= cfg.single_lane_max_m)
+                               & (width_m < cfg.standard_max_m)]    = 'standard'
+        road_type_map[skeleton & (width_m >= cfg.standard_max_m)]   = 'highway'
 
         return road_type_map
+
 
     def _class_distribution(self,
                              road_type_map: np.ndarray,
