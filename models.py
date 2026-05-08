@@ -48,6 +48,7 @@ def get_road_model():
     return smp.DeepLabV3Plus(
         encoder_name="resnet34",
         encoder_weights="imagenet",
+        encoder_output_stride=8,   # finer ASPP features (default=16) – better thin-road recall
         in_channels=3,
         classes=1,
         activation=None,

@@ -629,6 +629,12 @@ train_transform = A.Compose([
     A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
     A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15,
                          val_shift_limit=10, p=0.2),
+    # ── Plan 3: new augmentations ─────────────────────────────────────────────────
+    A.RandomShadow(p=0.3),                             # road hidden under tree shadow
+    A.CLAHE(clip_limit=2.0, p=0.2),                    # contrast recovery (haze/fog)
+    A.GaussNoise(std_range=(0.01, 0.05), p=0.15),      # JPEG compression artifacts
+    A.ElasticTransform(alpha=50, sigma=5, p=0.15),     # curved road geometry
+    # ───────────────────────────────────────────────────────────────────────
     A.CoarseDropout(
         num_holes_range=(1, 6),
         hole_height_range=(8, 32),

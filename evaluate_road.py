@@ -22,6 +22,61 @@ from models import get_road_model
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Section 0 ▸ TTA Helper  [Plan 5]
+# ─────────────────────────────────────────────────────────────────────────────
+
+def tta_predict(model: torch.nn.Module,
+               image_tensor: torch.Tensor,
+               device: torch.device) -> np.ndarray:
+    """
+    Test-Time Augmentation: average sigmoid probabilities over 4 flip orientations.
+
+    Augmentations:
+        0. Original
+        1. Horizontal flip  (left ↔ right)
+        2. Vertical flip    (up ↔ down)
+        3. Both flips       (180° rotation)
+
+    Args:
+        model        : road segmentation model (eval mode, on device).
+        image_tensor : (3, H, W) float32 tensor — NOT batched.
+        device       : torch device.
+
+    Returns:
+        prob_map : (H, W) float32 numpy array, averaged probability in [0, 1].
+    """
+    flip_configs = [
+        [],          # original
+        [2],         # horizontal flip  (dim 2 = width on a 3D tensor)
+        [3],         # vertical flip    (dim 3 = height ... but we unsqueeze below)
+        [2, 3],      # both
+    ]
+    # Note: after unsqueeze(0) the tensor is (1, 3, H, W).
+    # Width = dim 3, Height = dim 2 in a (B, C, H, W) batch.
+    flip_configs_batch = [
+        [],
+        [3],   # horizontal (W)
+        [2],   # vertical   (H)
+        [2, 3],
+    ]
+
+    preds = []
+    batch = image_tensor.unsqueeze(0).to(device)  # (1, 3, H, W)
+
+    for flip_dims in flip_configs_batch:
+        x = torch.flip(batch, dims=flip_dims) if flip_dims else batch
+        with torch.no_grad():
+            with autocast('cuda' if device.type == 'cuda' else 'cpu'):
+                logit = model(x)
+        prob = torch.sigmoid(logit).squeeze().cpu()   # (H, W)
+        if flip_dims:
+            prob = torch.flip(prob.unsqueeze(0), dims=[d - 1 for d in flip_dims]).squeeze(0)
+        preds.append(prob)
+
+    return torch.stack(preds).mean(0).numpy()   # (H, W) float32
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Section 1 ▸ Metric Computation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -71,7 +126,8 @@ def run_evaluation(model_path: str,
                    mask_dir:  str = '/kaggle/input/datasets/balraj98/deepglobe-road-extraction-dataset/train',
                    val_ratio: float = 0.20,
                    threshold: float = 0.50,
-                   top_k:     int   = 5):
+                   top_k:     int   = 5,
+                   use_tta:   bool  = False):   # Plan 5: TTA flag
     """
     Evaluate the road extraction model on the held-out val split.
 
@@ -82,9 +138,10 @@ def run_evaluation(model_path: str,
         val_ratio  : must match the value used during training (default 0.20)
         threshold  : binarisation threshold for predictions
         top_k      : number of best / worst images to report in breakdown
+        use_tta    : if True, average over 4 flip orientations at inference (+0.5-1 IoU)
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"📊 Evaluation | Device: {device}")
+    print(f"📊 Evaluation | Device: {device} | TTA={'ON' if use_tta else 'OFF'}")
 
     # ── Load model ────────────────────────────────────────────────────────────
     model = get_road_model().to(device)
@@ -95,8 +152,8 @@ def run_evaluation(model_path: str,
     # ── Load val split (same deterministic split as training) ─────────────────
     _, val_ds = get_road_splits(image_dir, mask_dir, val_ratio=val_ratio)
     val_loader = DataLoader(
-        val_ds, batch_size=16, shuffle=False,
-        num_workers=0, pin_memory=False   # P100: no workers to keep RAM lean
+        val_ds, batch_size=1 if use_tta else 16, shuffle=False,
+        num_workers=0, pin_memory=False
     )
     print(f"🗂️  Evaluating on {len(val_ds)} validation images "
           f"({val_ratio*100:.0f}% of total dataset)\n")

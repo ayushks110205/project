@@ -82,12 +82,12 @@ os.makedirs(CKPT_DIR, exist_ok=True)
 # uses ~1.5 GB activations per sample. Batch=12 → ~18 GB activations in fp16,
 # which fits comfortably with optimizer states + gradients in 16 GB.
 # We keep num_workers=0 to preserve RAM headroom (each worker costs ~1.5 GB).
-BATCH_SIZE = 12
+BATCH_SIZE = 8    # reduced from 12: encoder_output_stride=8 uses ~25% more VRAM
 
-NUM_EPOCHS          = 35
-LR                  = 1e-4
+NUM_EPOCHS          = 50   # extended from 35 — OneCycleLR benefits from longer schedule
+LR                  = 3e-4
 VAL_RATIO           = 0.2
-EARLY_STOP_PATIENCE = 5
+EARLY_STOP_PATIENCE = 7    # slightly more patient with the new lr schedule
 CHECKPOINT_EVERY    = 5
 
 # ── Checkpoint Resume ─────────────────────────────────────────────────────────
@@ -184,16 +184,35 @@ def train_road(epochs: int = NUM_EPOCHS):
     model = get_road_model().to(device)
     print(f"🩺 RAM after model   : {_ram_gb():.2f} GB")
 
-    # ── 4c. Combined Loss ─────────────────────────────────────────────────────
-    focal_loss = smp.losses.FocalLoss(mode='binary')
-    dice_loss  = smp.losses.DiceLoss(mode='binary')
+    # ── 4c. Combined Loss  [Plan 2] ───────────────────────────────────────────────────────────────
+    # 60% Dice + 30% Focal + 10% Tversky(α=0.7,β=0.3)
+    # Tversky penalises false negatives more than false positives — critical for
+    # thin roads (1-2 px wide) that the model tends to miss under class imbalance.
+    focal_loss   = smp.losses.FocalLoss(mode='binary')
+    dice_loss    = smp.losses.DiceLoss(mode='binary')
+    tversky_loss = smp.losses.TverskyLoss(mode='binary', alpha=0.7, beta=0.3)
 
     def criterion(logits, targets):
-        return 0.5 * focal_loss(logits, targets) + 0.5 * dice_loss(logits, targets)
+        return (0.6 * dice_loss(logits, targets) +
+                0.3 * focal_loss(logits, targets) +
+                0.1 * tversky_loss(logits, targets))
 
-    # ── 4d. Optimiser + Scheduler ─────────────────────────────────────────────
-    optimizer = optim.Adam(model.parameters(), lr=LR)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    # ── 4d. Optimiser + Scheduler  [Plan 4] ─────────────────────────────────────────────────
+    # AdamW: same as Adam but with correct decoupled weight decay — prevents
+    # overfitting on the ~5600 training images.
+    # OneCycleLR: 10% linear warmup → cosine anneal.  Steps per BATCH (not epoch).
+    # Must call scheduler.step() inside the training loop after scaler.update().
+    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=LR,
+        steps_per_epoch=len(train_loader),
+        epochs=epochs,
+        pct_start=0.10,        # 10% warmup
+        anneal_strategy='cos',
+        div_factor=10.0,       # initial lr = max_lr / 10
+        final_div_factor=1e4,  # final lr = initial_lr / 1e4
+    )
 
     # ── 4e. AMP Scaler ────────────────────────────────────────────────────────
     scaler = torch.amp.GradScaler('cuda')
@@ -250,6 +269,7 @@ def train_road(epochs: int = NUM_EPOCHS):
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
+            scheduler.step()   # OneCycleLR steps per BATCH, not per epoch
 
             train_loss_accum += loss.item()
             train_bar.set_postfix(loss=f"{loss.item():.4f}")
@@ -293,7 +313,7 @@ def train_road(epochs: int = NUM_EPOCHS):
         val_iou      = iou_sum  / max(metric_n, 1)
         val_dice     = dice_sum / max(metric_n, 1)
 
-        scheduler.step()
+        # OneCycleLR already stepped per-batch above; just read current lr
         current_lr = scheduler.get_last_lr()[0]
 
         # ── Log ───────────────────────────────────────────────────────────────
