@@ -113,7 +113,7 @@ def run_evaluation(model_path: str,
     print(f"📊 Inpainting Evaluation | Device: {device}")
 
     model = get_inpainting_model(base_channels=64).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
     model.eval()
     print(f"✅ Loaded: {model_path}\n")
 

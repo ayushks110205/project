@@ -203,7 +203,7 @@ def visualise_road(model_path: str,
         return
 
     model = get_road_model().to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
     model.eval()
     print(f"✅ Loaded model from: {model_path}")
 

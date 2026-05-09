@@ -239,7 +239,7 @@ def run_inference(model_path:      str,
 
     # ── Load model ─────────────────────────────────────────────────────────────
     model = get_inpainting_model(base_channels=64).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
     model.eval()
     print(f"✅ Model loaded: {model_path}")
 
