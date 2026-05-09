@@ -16,9 +16,9 @@ from torch.utils.data import DataLoader
 from torch.amp import autocast
 from tqdm import tqdm
 
-# ── Local imports ─────────────────────────────────────────────────────────────
-from dataset import get_road_splits, val_transform   # val split only
-from models import get_road_model
+# Pipeline imports are LAZY (inside run_evaluation()) — prevents the
+# albumentations → scipy → numpy crash on `import evaluate_road`.
+# Run as subprocess:  !python evaluate_road.py [--tta]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -143,6 +143,10 @@ def run_evaluation(model_path: str,
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"📊 Evaluation | Device: {device} | TTA={'ON' if use_tta else 'OFF'}")
 
+    # Lazy imports — deferred to avoid albumentations → scipy → numpy crash
+    from dataset import get_road_splits   # noqa: PLC0415
+    from models  import get_road_model    # noqa: PLC0415
+
     # ── Load model ────────────────────────────────────────────────────────────
     model = get_road_model().to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
@@ -238,9 +242,17 @@ def run_evaluation(model_path: str,
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    model_path = '/kaggle/working/road_model_best.pth'
-    
-    if not os.path.exists(model_path):
-        print(f"❌ Model not found at '{model_path}'. Train the model first.")
+    import argparse
+    parser = argparse.ArgumentParser(description='Evaluate road segmentation model')
+    parser.add_argument('--model', default='/kaggle/working/road_model_best.pth',
+                        help='Path to model weights')
+    parser.add_argument('--tta', action='store_true',
+                        help='Enable Test-Time Augmentation (4-flip ensemble)')
+    parser.add_argument('--threshold', type=float, default=0.5,
+                        help='Binarisation threshold (default 0.5)')
+    args = parser.parse_args()
+
+    if not os.path.exists(args.model):
+        print(f"❌ Model not found at '{args.model}'. Train the model first.")
     else:
-        run_evaluation(model_path)
+        run_evaluation(args.model, threshold=args.threshold, use_tta=args.tta)
