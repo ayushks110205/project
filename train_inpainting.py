@@ -61,7 +61,7 @@ CKPT_DIR    = '/kaggle/working/inpainting_ckpts'
 os.makedirs(CKPT_DIR, exist_ok=True)
 
 BATCH_SIZE  = 8           # Smaller than Stage 1 due to partial conv overhead
-NUM_EPOCHS  = 40
+NUM_EPOCHS  = 60          # Increased to allow training well past previous ep30
 LR          = 2e-4
 WD          = 1e-5
 VAL_RATIO   = 0.20
@@ -75,11 +75,11 @@ CHECKPOINT_EVERY    = 5
 # • Override : point to a Kaggle dataset you uploaded the .pth files to
 # • Disable  : set to None to always start from scratch
 #
-# ✅ This notebook mounts all datasets under /kaggle/input/datasets/<username>/
-#    Matches the existing BASE_PATH pattern:
-#    /kaggle/input/datasets/balraj98/deepglobe-road-extraction-dataset
-#    So "best path" dataset → /kaggle/input/datasets/ayushsingh110205/best-path
-RESUME_CKPT_DIR = '/kaggle/input/datasets/ayushsingh110205/best-path'
+# ✅ Dataset "inpainting improved paths" is mounted at:
+#    /kaggle/input/datasets/ayushsingh110205/inpainting-improved-paths
+#    It contains inpainting_best.pth + inpainting_ckpt_ep25.pth
+#    The auto-resume logic will pick up the highest-numbered epoch checkpoint.
+RESUME_CKPT_DIR = '/kaggle/input/datasets/ayushsingh110205/inpainting-improved-paths'
 
 # Loss weights (must match InpaintingLoss defaults for clarity)
 LAMBDA_VALID = 1.0
@@ -223,7 +223,7 @@ def train_inpainting(epochs: int = NUM_EPOCHS):
     latest_ckpt = find_latest_checkpoint(RESUME_CKPT_DIR)
     if latest_ckpt:
         print(f"\n📂 Auto-detected checkpoint: {latest_ckpt}")
-        ckpt = torch.load(latest_ckpt, map_location=device)
+        ckpt = torch.load(latest_ckpt, map_location=device, weights_only=False)
 
         model.load_state_dict(ckpt['model_state'])
         optimizer.load_state_dict(ckpt['optim_state'])

@@ -18,6 +18,7 @@
 # =============================================================================
 
 import os
+import warnings
 import gc
 import ctypes
 import torch
@@ -226,7 +227,7 @@ def train_road(epochs: int = NUM_EPOCHS):
     # ── 4f-2. Resume from checkpoint (if specified) ───────────────────────────
     if RESUME_FROM_CKPT and os.path.isfile(RESUME_FROM_CKPT):
         print(f"\n📂 Resuming from checkpoint: {RESUME_FROM_CKPT}")
-        ckpt = torch.load(RESUME_FROM_CKPT, map_location=device)
+        ckpt = torch.load(RESUME_FROM_CKPT, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model_state'])
         optimizer.load_state_dict(ckpt['optim_state'])
         best_val_loss     = ckpt.get('best_val_loss', float('inf'))
@@ -244,8 +245,12 @@ def train_road(epochs: int = NUM_EPOCHS):
             # fast-forward correctly by stepping steps_per_epoch × saved_epoch times.
             steps_done = ckpt['epoch'] * len(train_loader)
             print(f"   ⚠️  No scheduler_state in ckpt — fast-forwarding {steps_done} steps")
-            for _ in range(steps_done):
-                scheduler.step()
+            # Suppress the "step() before optimizer.step()" UserWarning that fires
+            # once per fast-forward step — harmless here, just noisy.
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', UserWarning)
+                for _ in range(steps_done):
+                    scheduler.step()
         print(f"   ✅ Restored epoch {ckpt['epoch']} | best_val_loss={best_val_loss:.4f}")
         print(f"   ▶  Continuing from epoch {start_epoch}/{epochs}\n")
         del ckpt
