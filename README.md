@@ -122,9 +122,11 @@ Finds the **least-cost path** between two pixel coordinates using `skimage.graph
 
 5-panel visualization: Satellite · Ground Truth · Confidence Heatmap · Binary Prediction · TP/FP/FN Overlay
 
-![Road extraction — Val #31, IoU=0.707](results%20of%20training%20road/road_viz_20260425_113021_sample01_val31.png)
-![Road extraction — Val #648](results%20of%20training%20road/road_viz_20260425_113021_sample02_val648.png)
-![Road extraction — Val #809](results%20of%20training%20road/road_viz_20260425_113021_sample03_val809.png)
+![Road extraction — Val #639](results%20of%20training%20road/road_viz_20260509_132833_sample01_val639.png)
+![Road extraction — Val #915](results%20of%20training%20road/road_viz_20260509_132833_sample02_val915.png)
+![Road extraction — Val #147](results%20of%20training%20road/road_viz_20260509_132833_sample03_val147.png)
+![Road extraction — Val #77](results%20of%20training%20road/road_viz_20260509_132833_sample04_val77.png)
+![Road extraction — Val #845](results%20of%20training%20road/road_viz_20260509_132833_sample05_val845.png)
 
 ---
 
@@ -138,11 +140,15 @@ Satellite · Binary Mask · Width Heatmap (plasma) · Surface Type Overlay · Co
 
 ### Stage 2 — Road Inpainting
 
-5-panel: Original mask · Corrupted (with holes) · Inpainted prediction · Ground Truth · Error Map
+8-panel: Original Mask · Corrupted · Inpainted Prediction · Ground Truth · Error Map · Width Heatmap · Surface Type · Vehicle Route
 
-![Inpainting — Val #888](results%20of%20road%20inpainting/inpaint_20260425_203152_05_val888.png)
-![Inpainting — Val #966](results%20of%20road%20inpainting/inpaint_20260425_203152_04_val966.png)
-![Inpainting — Val #437](results%20of%20road%20inpainting/inpaint_20260425_203152_02_val437.png)
+> Model trained to epoch 40 | Best Val L_hole = 0.0302 | Best Hole IoU = 0.4675
+
+![Inpainting — Val #1011](results%20of%20road%20inpainting/inpaint_20260513_113911_01_val1011.png)
+![Inpainting — Val #319](results%20of%20road%20inpainting/inpaint_20260513_113911_02_val319.png)
+![Inpainting — Val #349](results%20of%20road%20inpainting/inpaint_20260513_113911_03_val349.png)
+![Inpainting — Val #751](results%20of%20road%20inpainting/inpaint_20260513_113911_04_val751.png)
+![Inpainting — Val #91](results%20of%20road%20inpainting/inpaint_20260513_113911_05_val91.png)
 
 ---
 
