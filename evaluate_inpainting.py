@@ -2,7 +2,8 @@
 # evaluate_inpainting.py  –  Stage 2 Inpainting Evaluation
 # =============================================================================
 # Metrics: Hole IoU, Full IoU, Connectivity Score, Hole MAE
-# Visual : 5-panel figures (Complete | Corrupted | Prediction | GT | Error Map)
+# Visual : 8-panel figures (Original | Corrupted | Prediction | GT | Error Map
+#                            | Width Heatmap [T1-M1] | Surface [T1-M2] | Route [T1-M3])
 # =============================================================================
 
 import os
@@ -21,6 +22,7 @@ import random
 
 from inpainting_dataset import get_inpainting_splits
 from inpainting_model   import get_inpainting_model
+from infer_inpainting   import visualise_inpainting
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,10 +170,10 @@ def run_evaluation(model_path: str,
     print(f"  Connectivity Score  : {mcon:.4f}  (1.0=perfect)")
     print(f"{sep}\n")
 
-    # Visual reports
+    # Visual reports — 8-panel (includes Tier 1 width / surface / route)
     n_vis = min(n_visuals, len(val_ds))
     vis_idx = random.sample(range(len(val_ds)), n_vis)
-    print(f"🎨 Saving {n_vis} visual reports → {save_dir}/")
+    print(f"🎨 Saving {n_vis} visual reports (8-panel) → {save_dir}/")
 
     for si, vi in enumerate(vis_idx, 1):
         c_t, h_t, t_t = val_ds[vi]
@@ -181,17 +183,33 @@ def run_evaluation(model_path: str,
             with autocast('cuda'):
                 p_t = model(c_t, h_t)
 
-        pp   = p_t.squeeze().cpu().numpy()
-        pb   = (pp > threshold).astype(np.uint8)
-        tn   = t_t.squeeze().numpy()
-        hn   = (1 - h_t.squeeze().cpu().numpy()).astype(np.uint8)
-        hi   = hole_iou_score(pb, (tn > 0.5).astype(np.uint8), hn)
-        fi   = iou_score(pb, (tn > 0.5).astype(np.uint8))
-        cs   = connectivity_score(pb, (tn > 0.5).astype(np.uint8))
-        title = f"Val #{vi}  Hole IoU={hi:.4f}  Full IoU={fi:.4f}  Conn={cs:.3f}"
-        save_visual(tn, c_t.squeeze().cpu().numpy(), pb, hn, title,
-                    os.path.join(save_dir, f"inpaint_{ts}_{si:02d}_val{vi}.png"))
-        print(f"  [{si}/{n_vis}] {title}")
+        pp    = p_t.squeeze().cpu().numpy()                   # (H,W) prob
+        pb    = (pp > threshold).astype(np.float32)           # (H,W) binary
+        tn    = t_t.squeeze().numpy().astype(np.float32)      # (H,W) GT
+        c_np  = c_t.squeeze().cpu().numpy().astype(np.float32)# (H,W) corrupted
+        hn    = (1 - h_t.squeeze().cpu().numpy()).astype(np.float32)  # 1=hole
+
+        hi  = hole_iou_score((pb > 0.5).astype(np.uint8),
+                              (tn > 0.5).astype(np.uint8),
+                              (hn > 0.5).astype(np.uint8))
+        fi  = iou_score((pb > 0.5).astype(np.uint8),
+                         (tn > 0.5).astype(np.uint8))
+        cs  = connectivity_score((pb > 0.5).astype(np.uint8),
+                                  (tn > 0.5).astype(np.uint8))
+
+        save_path = os.path.join(save_dir, f"inpaint_{ts}_{si:02d}_val{vi}.png")
+        visualise_inpainting(
+            original=tn,
+            corrupted=c_np,
+            prediction=pb,
+            ground_truth=tn,
+            hole_iou=hi,
+            full_iou=fi,
+            save_path=save_path,
+            connectivity=cs,
+        )
+        print(f"  [{si}/{n_vis}] Val#{vi}  Hole IoU={hi:.4f}  "
+              f"Full IoU={fi:.4f}  Conn={cs:.3f}")
 
     print(f"\n✅ Done. Figures saved to: {save_dir}/")
     return all_m
@@ -201,14 +219,14 @@ if __name__ == '__main__':
     # Check multiple candidate paths — working dir first, then uploaded dataset
     model_candidates = [
         '/kaggle/working/inpainting_best.pth',
-        '/kaggle/input/datasets/ayushsingh110205/best-path/inpainting_best.pth',
+        '/kaggle/input/datasets/ayushsingh110205/inpainting-improved-paths/inpainting_best.pth',
     ]
     mp = next((p for p in model_candidates if os.path.exists(p)), None)
     if mp is None:
         print("❌ Model not found in any of:")
         for p in model_candidates:
             print(f"   {p}")
-        print("Train Stage 2 first, or upload inpainting_best.pth to the 'best path' dataset.")
+        print("Upload inpainting_best.pth to the 'inpainting improved paths' dataset.")
     else:
         print(f"📦 Loading model from: {mp}")
         run_evaluation(mp)
