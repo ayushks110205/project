@@ -21,6 +21,16 @@ try:
 except ImportError:
     pass
 
+# ── Tier 2 Road Graph Layer (optional) ───────────────────────────────────────
+_TIER2_AVAILABLE = False
+try:
+    from road_graph import (RoadGraph, find_top3_routes,
+                            pick_src_dst_auto, draw_routes,
+                            VEHICLE_TYPES)
+    _TIER2_AVAILABLE = True
+except ImportError:
+    pass
+
 # =============================================================================
 # inference.py  –  Single-Image Inference for All Pipeline Stages
 # =============================================================================
@@ -265,6 +275,129 @@ def run_tier1_inference(image_path:   str,
     }
 
 
+# ───────────────────────────────────────────────────────────────────────────────
+# Tier 2 Road Graph
+# ───────────────────────────────────────────────────────────────────────────────
+
+def run_tier2_inference(image_path:    str,
+                        road_mask_np:  np.ndarray,
+                        vis_image_np:  np.ndarray,
+                        tier1_result:  dict,
+                        results_dir:   str = RESULTS_DIR) -> dict:
+    """
+    Run the Tier 2 Road Graph Layer and save all artefacts.
+
+    Artefacts saved:
+        ``<stem>_route_viz.png``       — annotated route visualisation (car)
+        ``<stem>_tier2_summary.json``  — top-3 routes per vehicle type
+
+    Args:
+        image_path   : original satellite image path (used for stem only).
+        road_mask_np : (H, W) uint8 binary road mask (0 / 255).
+        vis_image_np : (H, W, 3) uint8 RGB satellite image.
+        tier1_result : dict returned by :func:`run_tier1_inference`.
+        results_dir  : output directory.
+
+    Returns:
+        dict with keys ``graph``, ``routes_by_vehicle``, ``route_viz_rgb``,
+        ``n_nodes``, ``n_edges``, ``src_node``, ``dst_node``,
+        and ``saved_paths``.
+
+    Raises:
+        RuntimeError : If road_graph module is not importable.
+    """
+    if not _TIER2_AVAILABLE:
+        raise RuntimeError(
+            "Tier 2 module unavailable.  "
+            "Install networkx: pip install networkx")
+
+    os.makedirs(results_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(image_path))[0]
+
+    # ── Build graph ───────────────────────────────────────────────────────────
+    rg = RoadGraph(tier1_result)
+    G  = rg.G
+    print(f"  Tier2-Graph ✓  nodes={G.number_of_nodes()}  "
+          f"edges={G.number_of_edges()}")
+
+    # ── Auto-pick endpoints ───────────────────────────────────────────────────
+    src_node, dst_node = pick_src_dst_auto(G)
+
+    # ── Route all vehicle types ───────────────────────────────────────────────
+    routes_by_vehicle: dict = {}
+    for vtype in VEHICLE_TYPES:
+        if src_node is None or dst_node is None:
+            routes_by_vehicle[vtype] = []
+        else:
+            routes_by_vehicle[vtype] = find_top3_routes(G, src_node, dst_node, vtype)
+        n = len(routes_by_vehicle[vtype])
+        print(f"  Tier2-{vtype:<12s} {n} route(s) found")
+
+    # ── Car route visualisation ───────────────────────────────────────────────
+    route_viz_rgb = draw_routes(vis_image_np, G,
+                                routes_by_vehicle.get('car', []))
+    viz_path = os.path.join(results_dir, f"{stem}_route_viz.png")
+    cv2.imwrite(viz_path,
+                cv2.cvtColor(route_viz_rgb, cv2.COLOR_RGB2BGR))
+    print(f"💾  Route viz        → {viz_path}")
+
+    # ── JSON summary ──────────────────────────────────────────────────────────
+    def _route_to_dict(r) -> dict:
+        return {
+            'rank':               r.rank,
+            'total_distance_m':   round(r.total_distance_m, 2),
+            'total_cost':         round(r.total_cost, 4),
+            'mean_width_m':       round(r.mean_width_m, 2),
+            'dominant_surface':   r.dominant_surface,
+            'dominant_road_type': r.dominant_road_type,
+        }
+
+    summary_dict = {
+        'n_nodes':  G.number_of_nodes(),
+        'n_edges':  G.number_of_edges(),
+        'src_node': src_node,
+        'dst_node': dst_node,
+    }
+    for vtype in VEHICLE_TYPES:
+        summary_dict[f'routes_{vtype}'] = [
+            _route_to_dict(r) for r in routes_by_vehicle[vtype]]
+
+    json_path = os.path.join(results_dir, f"{stem}_tier2_summary.json")
+    with open(json_path, 'w') as fh:
+        json.dump(summary_dict, fh, indent=2)
+    print(f"💾  Tier 2 summary   → {json_path}")
+
+    # ── Print stdout table ────────────────────────────────────────────────────
+    sep = '=' * 60
+    print(f"\n{sep}")
+    print(f"  TIER 2 ROAD GRAPH  |  {stem}")
+    print(f"{sep}")
+    print(f"  Nodes : {G.number_of_nodes()}    Edges : {G.number_of_edges()}")
+    for vtype in VEHICLE_TYPES:
+        rts = routes_by_vehicle[vtype]
+        print(f"  {vtype:<12s}: ", end='')
+        if not rts:
+            print("no route found")
+        else:
+            parts = [f"R{r.rank}={r.total_distance_m:.0f}m({r.dominant_surface})" for r in rts]
+            print('  '.join(parts))
+    print(f"{sep}\n")
+
+    return {
+        'graph':             rg,
+        'routes_by_vehicle': routes_by_vehicle,
+        'route_viz_rgb':     route_viz_rgb,
+        'n_nodes':           G.number_of_nodes(),
+        'n_edges':           G.number_of_edges(),
+        'src_node':          src_node,
+        'dst_node':          dst_node,
+        'saved_paths': {
+            'route_viz': viz_path,
+            'json':      json_path,
+        },
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
@@ -279,41 +412,57 @@ if __name__ == '__main__':
                         help='Model type to run  (default: road)')
     parser.add_argument('--tier1', action='store_true',
                         help=(
-                            'Run Tier 1 Road Intelligence Layer after road '
-                            'inference (Module 1: width estimation, '
-                            'Module 2: surface type classification).  '
-                            'Only meaningful with --model road.  '
-                            'Saves width heatmap, surface overlay, 5-panel '
-                            'figure, and JSON summary to RESULTS_DIR.'))
+                            'Run Tier 1 Road Intelligence after road inference '
+                            '(width estimation + surface classification). '
+                            'Only with --model road.'))
+    parser.add_argument('--tier2', action='store_true',
+                        help=(
+                            'Run Tier 2 Road Graph after road inference '
+                            '(NetworkX graph + top-3 routes per vehicle type). '
+                            'Implies --tier1.  Only with --model road. '
+                            'Saves <stem>_route_viz.png and <stem>_tier2_summary.json.'))
     args = parser.parse_args()
 
-    # ── Standard inference ────────────────────────────────────────────────────────
+    # --tier2 implies --tier1
+    if args.tier2:
+        args.tier1 = True
+
+    # ── Standard inference ────────────────────────────────────────────────────
     run_inference(args.image, model_type=args.model)
 
-    # ── Tier 1 (road-only) ────────────────────────────────────────────────────────
+    # ── Tier 1 + optional Tier 2 (road-only) ─────────────────────────────────
     if args.tier1:
         if args.model != 'road':
-            print("⚠️  --tier1 is only applicable for --model road.  Skipping.")
+            print("⚠️  --tier1/--tier2 only applies to --model road.  Skipping.")
         elif not _TIER1_AVAILABLE:
             print("❌  Tier 1 modules not found.  "
-                  "Install scikit-image and scikit-learn to use --tier1.")
+                  "Install scikit-image and scikit-learn.")
         else:
-            # Re-load the Stage 1 mask that was just saved
             stem      = os.path.splitext(os.path.basename(args.image))[0]
             mask_path = os.path.join(RESULTS_DIR, f"{stem}_road_pred.png")
 
             if not os.path.exists(mask_path):
-                print(f"❌  Road mask not found at {mask_path}. "
-                      "Cannot run Tier 1.")
+                print(f"❌  Road mask not found at {mask_path}.")
             else:
                 road_mask_np = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-
-                # Load the satellite image for texture features
-                bgr      = cv2.imread(args.image)
-                vis_rgb  = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB) if bgr is not None \
-                           else np.zeros((*road_mask_np.shape, 3), dtype=np.uint8)
+                bgr          = cv2.imread(args.image)
+                vis_rgb      = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB) \
+                               if bgr is not None \
+                               else np.zeros((*road_mask_np.shape, 3), dtype=np.uint8)
 
                 print("\n🚀 Running Tier 1 Road Intelligence Layer…")
                 t1_result = run_tier1_inference(
                     args.image, road_mask_np, vis_rgb, results_dir=RESULTS_DIR)
-                print(f"\n✅ Tier 1 complete → figure: {t1_result['saved_paths']['figure']}")
+                print(f"\n✅ Tier 1 complete → {t1_result['saved_paths']['figure']}")
+
+                if args.tier2:
+                    if not _TIER2_AVAILABLE:
+                        print("❌  Tier 2 module not found.  "
+                              "Install networkx: pip install networkx")
+                    else:
+                        print("\n🚀 Running Tier 2 Road Graph Layer…")
+                        t2_result = run_tier2_inference(
+                            args.image, road_mask_np, vis_rgb,
+                            t1_result, results_dir=RESULTS_DIR)
+                        print(f"\n✅ Tier 2 complete → "
+                              f"{t2_result['saved_paths']['route_viz']}")

@@ -317,14 +317,20 @@ from dataset import building_val_transform
 from PIL     import Image
 
 # ── Tier 1 Road Intelligence Layer ──────────────────────────────────────────
-# Lazy imports — only loaded when run_tier1() is called so the pipeline
-# works even if skimage / sklearn are not installed.
+# Lazy imports — only loaded when run_tier1() / run_tier2() is called so the
+# pipeline works even if skimage / sklearn are not installed.
 _TIER1_AVAILABLE = False
+_TIER2_AVAILABLE = False
 try:
-    from road_width          import RoadWidthEstimator
+    from road_width           import RoadWidthEstimator
     from road_type_classifier import RoadTypeClassifier
     from vizualize_road_tier1 import save_tier1_figure
     _TIER1_AVAILABLE = True
+except ImportError:
+    pass
+try:
+    from road_graph import RoadGraph, find_top3_routes, pick_src_dst_auto, draw_routes, VEHICLE_TYPES
+    _TIER2_AVAILABLE = True
 except ImportError:
     pass
 
@@ -636,6 +642,104 @@ class SatellitePipeline:
             'width_result': width_result,
             'type_result':  type_result,
             'summary':      summary,
+        }
+
+    def run_tier2(self,
+                  image_np:     np.ndarray,
+                  road_mask_np: np.ndarray,
+                  default_vehicle: str = 'car') -> dict:
+        """
+        Run the Tier 2 Road Graph Layer on top of an existing binary road mask.
+
+        Internally calls :meth:`run_tier1` to obtain skeleton, width, and
+        surface data, then builds a :class:`road_graph.RoadGraph` and queries
+        top-3 routes for all four vehicle profiles.
+
+        Args:
+            image_np        : (H, W, 3) uint8 RGB satellite image.
+            road_mask_np    : (H, W) uint8 binary road mask (0 / 255).
+            default_vehicle : vehicle type used for the returned
+                              ``route_viz_rgb``.  One of
+                              ``'pedestrian'``, ``'motorcycle'``,
+                              ``'car'``, ``'truck'``.
+
+        Returns:
+            dict with keys:
+
+                ``tier1_result``
+                    Full Tier 1 result dict (see :meth:`run_tier1`).
+
+                ``graph``
+                    :class:`road_graph.RoadGraph` instance.
+
+                ``routes_by_vehicle``
+                    Dict mapping each vehicle type to its list of
+                    :class:`road_graph.RouteResult` (up to 3 each).
+
+                ``route_viz_rgb``
+                    (H, W, 3) uint8 RGB visualisation annotated with
+                    routes for *default_vehicle*.
+
+                ``n_nodes``
+                    Number of graph nodes.
+
+                ``n_edges``
+                    Number of graph edges.
+
+                ``src_node``
+                    Auto-selected source node ID (or None).
+
+                ``dst_node``
+                    Auto-selected destination node ID (or None).
+
+        Raises:
+            RuntimeError : If Tier 1 or Tier 2 modules are unavailable.
+        """
+        if not _TIER1_AVAILABLE:
+            raise RuntimeError(
+                "Tier 1 modules unavailable.  "
+                "Install scikit-image and scikit-learn.")
+        if not _TIER2_AVAILABLE:
+            raise RuntimeError(
+                "Tier 2 module (road_graph.py) unavailable.  "
+                "Ensure networkx is installed: pip install networkx")
+
+        # ── Step 1: Tier 1 ────────────────────────────────────────────────────
+        tier1_result = self.run_tier1(image_np, road_mask_np)
+
+        # ── Step 2: Build graph ───────────────────────────────────────────────
+        rg = RoadGraph(tier1_result)
+        G  = rg.G
+        print(f"  Tier2-Graph ✓  nodes={G.number_of_nodes()}  "
+              f"edges={G.number_of_edges()}")
+
+        # ── Step 3: Auto-pick src / dst ───────────────────────────────────────
+        src_node, dst_node = pick_src_dst_auto(G)
+
+        # ── Step 4: Route all vehicle types ──────────────────────────────────
+        routes_by_vehicle: dict = {}
+        for vtype in VEHICLE_TYPES:
+            if src_node is None or dst_node is None:
+                routes_by_vehicle[vtype] = []
+            else:
+                routes_by_vehicle[vtype] = find_top3_routes(
+                    G, src_node, dst_node, vtype)
+            n = len(routes_by_vehicle[vtype])
+            print(f"  Tier2-{vtype:<12s} {n} route(s) found")
+
+        # ── Step 5: Draw route visualisation ──────────────────────────────────
+        vis_routes = routes_by_vehicle.get(default_vehicle, [])
+        route_viz_rgb = draw_routes(image_np, G, vis_routes)
+
+        return {
+            'tier1_result':      tier1_result,
+            'graph':             rg,
+            'routes_by_vehicle': routes_by_vehicle,
+            'route_viz_rgb':     route_viz_rgb,
+            'n_nodes':           G.number_of_nodes(),
+            'n_edges':           G.number_of_edges(),
+            'src_node':          src_node,
+            'dst_node':          dst_node,
         }
 
 
