@@ -44,9 +44,11 @@ except ImportError:
 #   python inference.py --image tile.tif --model building
 # =============================================================================
 
-# ── Kaggle model paths ────────────────────────────────────────────────────────
-# Dataset "best path" (ayushsingh110205) is mounted at /kaggle/input/datasets/ayushsingh110205/best-path/
-ROAD_WEIGHTS      = '/kaggle/input/datasets/ayushsingh110205/best-path/road_model_best.pth'
+# ── Kaggle model paths ──────────────────────────────────────────────────
+# Road model     → dataset "newly made for improved road training"
+ROAD_WEIGHTS      = '/kaggle/input/datasets/ayushsingh110205/newly-made-for-improved-road-training/road_model_best.pth'
+# Inpainting model → dataset "inpainting improved paths"
+INPAINT_WEIGHTS   = '/kaggle/input/datasets/ayushsingh110205/inpainting-improved-paths/inpainting_best.pth'
 LANDCOVER_WEIGHTS = '/kaggle/input/datasets/ayushsingh110205/best-path/landcover_best.pth'
 BUILDING_WEIGHTS  = '/kaggle/input/datasets/ayushsingh110205/best-path/building_model_best.pth'
 RESULTS_DIR       = '/kaggle/working/results'

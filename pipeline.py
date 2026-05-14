@@ -50,9 +50,10 @@ from inpainting_model  import get_inpainting_model
 from infer_inpainting  import auto_detect_holes
 
 # ── Kaggle dataset paths ────────────────────────────────────────────────────────
-# Dataset "best path" (ayushsingh110205) is mounted at /kaggle/input/datasets/ayushsingh110205/best-path/
-_W_ROAD     = '/kaggle/input/datasets/ayushsingh110205/best-path/road_model_best.pth'
-_W_INPAINT  = '/kaggle/input/datasets/ayushsingh110205/best-path/inpainting_best.pth'
+# Road model     → dataset "newly made for improved road training"
+_W_ROAD     = '/kaggle/input/datasets/ayushsingh110205/newly-made-for-improved-road-training/road_model_best.pth'
+# Inpainting model → dataset "inpainting improved paths"
+_W_INPAINT  = '/kaggle/input/datasets/ayushsingh110205/inpainting-improved-paths/inpainting_best.pth'
 _W_LC       = '/kaggle/input/datasets/ayushsingh110205/best-path/landcover_best.pth'
 _W_BUILDING = '/kaggle/input/datasets/ayushsingh110205/best-path/building_model_best.pth'
 _RESULTS    = '/kaggle/working/results/pipeline'
