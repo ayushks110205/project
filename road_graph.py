@@ -128,7 +128,7 @@ def _count_skel_neighbours(skeleton: np.ndarray) -> np.ndarray:
     skel_u8 = skeleton.astype(np.uint8)
     kernel  = np.ones((3, 3), dtype=np.uint8)
     # convolve counts ALL 9 cells; subtract self
-    counts  = cv2.filter2D(skel_u8, ddepth=cv2.CV_32S, kernel=kernel.astype(np.float32))
+    counts  = cv2.filter2D(skel_u8, ddepth=-1, kernel=kernel.astype(np.uint8))
     counts  = np.clip(counts.astype(np.int32) - skel_u8.astype(np.int32), 0, 8)
     return (counts * skel_u8).astype(np.uint8)
 
