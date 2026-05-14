@@ -341,13 +341,21 @@ def run_tier2_inference(image_path:    str,
         n = len(routes_by_vehicle[vtype])
         print(f"  Tier2-{vtype:<12s} {n} route(s) found")
 
-    # ── Car route visualisation ───────────────────────────────────────────────
+    # ── Best-available vehicle route visualisation ────────────────────────────
+    # Prefer car, fall back to motorcycle → pedestrian → truck so rural tiles
+    # (where car routes are blocked by width constraints) still show a route.
+    best_vehicle = (
+        'car'        if routes_by_vehicle.get('car')
+        else 'motorcycle' if routes_by_vehicle.get('motorcycle')
+        else 'pedestrian' if routes_by_vehicle.get('pedestrian')
+        else 'truck'
+    )
     route_viz_rgb = draw_routes(vis_image_np, G,
-                                routes_by_vehicle.get('car', []))
+                                routes_by_vehicle.get(best_vehicle, []))
     viz_path = os.path.join(results_dir, f"{stem}_route_viz.png")
     cv2.imwrite(viz_path,
                 cv2.cvtColor(route_viz_rgb, cv2.COLOR_RGB2BGR))
-    print(f"💾  Route viz        → {viz_path}")
+    print(f"💾  Route viz ({best_vehicle}) → {viz_path}")
 
     # ── JSON summary ──────────────────────────────────────────────────────────
     def _route_to_dict(r) -> dict:

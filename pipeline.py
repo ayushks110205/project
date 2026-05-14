@@ -736,8 +736,17 @@ class SatellitePipeline:
             print(f"  Tier2-{vtype:<12s} {n} route(s) found")
 
         # ── Step 5: Draw route visualisation ──────────────────────────────────
-        vis_routes = routes_by_vehicle.get(default_vehicle, [])
+        # Prefer default_vehicle; fall back to first vehicle with routes so
+        # rural tiles (where car is blocked by width) still show a route.
+        best_vehicle = default_vehicle
+        if not routes_by_vehicle.get(best_vehicle):
+            for _v in ['car', 'motorcycle', 'pedestrian', 'truck']:
+                if routes_by_vehicle.get(_v):
+                    best_vehicle = _v
+                    break
+        vis_routes = routes_by_vehicle.get(best_vehicle, [])
         route_viz_rgb = draw_routes(image_np, G, vis_routes)
+        print(f"  Tier2-viz vehicle : {best_vehicle}")
 
         return {
             'tier1_result':      tier1_result,
