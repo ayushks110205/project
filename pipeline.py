@@ -330,7 +330,8 @@ try:
 except ImportError:
     pass
 try:
-    from road_graph import RoadGraph, find_top3_routes, pick_src_dst_auto, draw_routes, VEHICLE_TYPES
+    from road_graph import (RoadGraph, find_top3_routes, pick_src_dst_auto,
+                             draw_routes, VEHICLE_TYPES, get_graph_summary)
     _TIER2_AVAILABLE = True
 except ImportError:
     pass
@@ -711,8 +712,14 @@ class SatellitePipeline:
         # ── Step 2: Build graph ───────────────────────────────────────────────
         rg = RoadGraph(tier1_result)
         G  = rg.G
-        print(f"  Tier2-Graph ✓  nodes={G.number_of_nodes()}  "
-              f"edges={G.number_of_edges()}")
+        graph_summary = get_graph_summary(G)
+        print(f"  Tier2-Graph ✓  "
+              f"nodes={graph_summary['n_nodes']}  "
+              f"edges={graph_summary['n_edges']}  "
+              f"components={graph_summary['n_components']}  "
+              f"largest_cc={graph_summary['largest_component_size']}  "
+              f"endpoints={graph_summary['n_endpoints']}  "
+              f"junctions={graph_summary['n_junctions']}")
 
         # ── Step 3: Auto-pick src / dst ───────────────────────────────────────
         src_node, dst_node = pick_src_dst_auto(G)
@@ -737,6 +744,7 @@ class SatellitePipeline:
             'graph':             rg,
             'routes_by_vehicle': routes_by_vehicle,
             'route_viz_rgb':     route_viz_rgb,
+            'graph_summary':     graph_summary,
             'n_nodes':           G.number_of_nodes(),
             'n_edges':           G.number_of_edges(),
             'src_node':          src_node,

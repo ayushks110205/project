@@ -26,7 +26,7 @@ _TIER2_AVAILABLE = False
 try:
     from road_graph import (RoadGraph, find_top3_routes,
                             pick_src_dst_auto, draw_routes,
-                            VEHICLE_TYPES)
+                            VEHICLE_TYPES, get_graph_summary)
     _TIER2_AVAILABLE = True
 except ImportError:
     pass
@@ -319,8 +319,14 @@ def run_tier2_inference(image_path:    str,
     # ── Build graph ───────────────────────────────────────────────────────────
     rg = RoadGraph(tier1_result)
     G  = rg.G
-    print(f"  Tier2-Graph ✓  nodes={G.number_of_nodes()}  "
-          f"edges={G.number_of_edges()}")
+    graph_summary = get_graph_summary(G)
+    print(f"  Tier2-Graph ✓  "
+          f"nodes={graph_summary['n_nodes']}  "
+          f"edges={graph_summary['n_edges']}  "
+          f"components={graph_summary['n_components']}  "
+          f"largest_cc={graph_summary['largest_component_size']}  "
+          f"endpoints={graph_summary['n_endpoints']}  "
+          f"junctions={graph_summary['n_junctions']}")
 
     # ── Auto-pick endpoints ───────────────────────────────────────────────────
     src_node, dst_node = pick_src_dst_auto(G)
@@ -355,6 +361,7 @@ def run_tier2_inference(image_path:    str,
         }
 
     summary_dict = {
+        'graph_summary': graph_summary,
         'n_nodes':  G.number_of_nodes(),
         'n_edges':  G.number_of_edges(),
         'src_node': src_node,
@@ -374,7 +381,10 @@ def run_tier2_inference(image_path:    str,
     print(f"\n{sep}")
     print(f"  TIER 2 ROAD GRAPH  |  {stem}")
     print(f"{sep}")
-    print(f"  Nodes : {G.number_of_nodes()}    Edges : {G.number_of_edges()}")
+    print(f"  Nodes : {graph_summary['n_nodes']}    "
+          f"Edges : {graph_summary['n_edges']}    "
+          f"Components : {graph_summary['n_components']}    "
+          f"Largest CC : {graph_summary['largest_component_size']}")
     for vtype in VEHICLE_TYPES:
         rts = routes_by_vehicle[vtype]
         print(f"  {vtype:<12s}: ", end='')

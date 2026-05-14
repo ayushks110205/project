@@ -528,11 +528,14 @@ def pick_src_dst_auto(G: nx.Graph,
                       rng_seed:   int = 0
                       ) -> Tuple[Optional[int], Optional[int]]:
     """
-    Automatically pick the two graph nodes that are furthest apart.
+    Automatically pick the two graph nodes that are furthest apart,
+    restricted to the **largest connected component** so that a path
+    is guaranteed to exist between src and dst.
 
-    Preferentially selects from endpoint nodes; falls back to all nodes
-    if fewer than 2 endpoints exist.  For large graphs, subsamples
-    *max_sample* nodes to avoid O(N²) computation.
+    Preferentially selects from endpoint nodes within the largest
+    component; falls back to all nodes in that component if fewer
+    than 2 endpoints exist.  For large graphs, subsamples *max_sample*
+    nodes to avoid O(N²) computation.
 
     Args:
         G          : NetworkX graph.
@@ -545,9 +548,13 @@ def pick_src_dst_auto(G: nx.Graph,
     if G.number_of_nodes() < 2:
         return None, None
 
+    # ── Restrict to largest connected component ───────────────────────────────
+    components = list(nx.connected_components(G))
+    largest_cc = max(components, key=len)
+
     endpoints = [n for n, d in G.nodes(data=True)
-                 if d.get('node_type') == 'endpoint']
-    candidates = endpoints if len(endpoints) >= 2 else list(G.nodes())
+                 if d.get('node_type') == 'endpoint' and n in largest_cc]
+    candidates = endpoints if len(endpoints) >= 2 else [n for n in largest_cc]
 
     if len(candidates) < 2:
         return None, None
@@ -568,6 +575,34 @@ def pick_src_dst_auto(G: nx.Graph,
     flat_idx = int(np.argmax(dist_mat))
     i, j     = divmod(flat_idx, len(node_ids))
     return node_ids[i], node_ids[j]
+
+
+def get_graph_summary(G: nx.Graph) -> dict:
+    """
+    Return a concise diagnostic summary of the road network graph.
+
+    Args:
+        G : NetworkX graph from :class:`RoadGraph`.
+
+    Returns:
+        dict with keys:
+            n_nodes, n_edges, n_components,
+            largest_component_size, n_endpoints, n_junctions.
+    """
+    components = list(nx.connected_components(G))
+    largest_cc_size = max((len(c) for c in components), default=0)
+    n_endpoints = sum(
+        1 for _, d in G.nodes(data=True) if d.get('node_type') == 'endpoint')
+    n_junctions = sum(
+        1 for _, d in G.nodes(data=True) if d.get('node_type') == 'junction')
+    return {
+        'n_nodes':                G.number_of_nodes(),
+        'n_edges':                G.number_of_edges(),
+        'n_components':           len(components),
+        'largest_component_size': largest_cc_size,
+        'n_endpoints':            n_endpoints,
+        'n_junctions':            n_junctions,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
