@@ -319,7 +319,12 @@ def run_tier2_inference(image_path:    str,
     # ── Build graph ───────────────────────────────────────────────────────────
     rg = RoadGraph(tier1_result)
     G  = rg.G
-    graph_summary = get_graph_summary(G)
+    graph_summary = get_graph_summary(
+        G,
+        is_urban_scene    = rg.is_urban_corrected,
+        junction_density  = rg.junction_density,
+        n_urban_corrected = rg.n_urban_corrected,
+    )
     print(f"  Tier2-Graph ✓  "
           f"nodes={graph_summary['n_nodes']}  "
           f"edges={graph_summary['n_edges']}  "
@@ -397,6 +402,10 @@ def run_tier2_inference(image_path:    str,
           f"p25={graph_summary.get('width_p25_m',0):.2f}m  "
           f"p50={graph_summary.get('width_p50_m',0):.2f}m  "
           f"p75={graph_summary.get('width_p75_m',0):.2f}m")
+    if graph_summary.get('is_urban_scene'):
+        print(f"  Urban correction  jd={graph_summary.get('junction_density',0):.3f}  "
+              f"{graph_summary.get('urban_edges_corrected',0)} edge(s) relabelled "
+              f"(canopy shadow → paved)")
     print(f"  Thresholds : pedestrian≥0.0m  motorcycle≥0.5m  "
           f"car≥1.5m  truck≥2.5m  (below=penalty, not blocked)")
     for vtype in VEHICLE_TYPES:

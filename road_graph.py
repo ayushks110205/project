@@ -32,6 +32,16 @@ import cv2
 import networkx as nx
 import numpy as np
 
+# Urban canopy shadow correction (applied after graph build)
+try:
+    from surface_urban_patch import (
+        apply_urban_correction_to_graph,
+        propagate_correction_to_surface_map,
+    )
+    _URBAN_PATCH_OK = True
+except ImportError:
+    _URBAN_PATCH_OK = False
+
 # GSD used throughout (metres per pixel, matches DeepGlobe pipeline)
 _GSD_M_PER_PX: float = 0.5
 
@@ -336,6 +346,30 @@ class RoadGraph:
 
         self.G: nx.Graph = self._build_graph()
 
+        # ── Urban canopy shadow correction ────────────────────────────────────
+        # After the graph is built we know junction_density, component sizes,
+        # and per-edge mean_width_m — enough to detect urban scenes and fix
+        # systematic M2 mis-classifications (shadow on paved → "damaged").
+        self.is_urban_corrected: bool  = False
+        self.junction_density:   float = 0.0
+        self.n_urban_corrected:  int   = 0
+
+        if _URBAN_PATCH_OK and self.G.number_of_edges() > 0:
+            self.G, self.is_urban_corrected, self.junction_density, \
+                self.n_urban_corrected = apply_urban_correction_to_graph(
+                    self.G,
+                    _SURFACE_MULTIPLIERS,
+                    _MIN_WIDTH_M,
+                )
+            if self.is_urban_corrected and self.n_urban_corrected > 0:
+                # Propagate corrected edge labels back to the pixel surface_map
+                # so Tier 1 visualisations also reflect the correction.
+                propagate_correction_to_surface_map(self.G, self.surface_map)
+                print(f"  Urban correction ✓  "
+                      f"jd={self.junction_density:.3f}  "
+                      f"{self.n_urban_corrected} edge(s) relabelled "
+                      f"(shadow-on-paved artefact fixed)")
+
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build_graph(self) -> nx.Graph:
@@ -603,19 +637,24 @@ def pick_src_dst_auto(G: nx.Graph,
     return node_ids[i], node_ids[j]
 
 
-def get_graph_summary(G: nx.Graph) -> dict:
+def get_graph_summary(G: nx.Graph,
+                      is_urban_scene:    bool  = False,
+                      junction_density:  float = 0.0,
+                      n_urban_corrected: int   = 0) -> dict:
     """
     Return a concise diagnostic summary of the road network graph.
 
     Args:
-        G : NetworkX graph from :class:`RoadGraph`.
+        G                 : NetworkX graph from :class:`RoadGraph`.
+        is_urban_scene    : True if urban canopy correction was applied.
+        junction_density  : graph junction density (n_junctions/n_nodes).
+        n_urban_corrected : number of edges whose surface was corrected.
 
     Returns:
-        dict with keys:
-            n_nodes, n_edges, n_components, largest_component_size,
-            n_endpoints, n_junctions, mean_width_m (edge mean),
-            width_p25_m, width_p50_m, width_p75_m,
-            plus per-vehicle traversable_edges_pct_<vehicle> keys.
+        dict with keys: n_nodes, n_edges, n_components,
+        largest_component_size, n_endpoints, n_junctions,
+        mean_width_m, width_p25/50/75_m, preferred_pct_<vehicle>,
+        is_urban_scene, junction_density, urban_edges_corrected.
     """
     components = list(nx.connected_components(G))
     largest_cc_size = max((len(c) for c in components), default=0)
@@ -627,29 +666,27 @@ def get_graph_summary(G: nx.Graph) -> dict:
     # Width statistics over all edges
     widths = [d.get('mean_width_m', 0.0) for _, _, d in G.edges(data=True)]
     if widths:
-        w_arr = np.array(widths, dtype=np.float32)
-        mean_w  = float(np.mean(w_arr))
-        p25_w   = float(np.percentile(w_arr, 25))
-        p50_w   = float(np.percentile(w_arr, 50))
-        p75_w   = float(np.percentile(w_arr, 75))
+        w_arr  = np.array(widths, dtype=np.float32)
+        mean_w = float(np.mean(w_arr))
+        p25_w  = float(np.percentile(w_arr, 25))
+        p50_w  = float(np.percentile(w_arr, 50))
+        p75_w  = float(np.percentile(w_arr, 75))
     else:
         mean_w = p25_w = p50_w = p75_w = 0.0
 
-    # Fraction of edges AT OR ABOVE the minimum width for each vehicle.
-    # (Since width violations now produce heavy penalties not inf, this shows
-    # what % of edges are traversed without width penalty — the "preferred" set.)
-    traversable: dict = {}
-    n_edges = G.number_of_edges()
+    # % of edges at or above minimum width (no width penalty applied)
+    n_edges  = G.number_of_edges()
+    preferred: dict = {}
     for vtype in VEHICLE_TYPES:
         min_w_v = _MIN_WIDTH_M[vtype]
         if n_edges == 0:
-            traversable[f'preferred_pct_{vtype}'] = 0.0
+            preferred[f'preferred_pct_{vtype}'] = 0.0
         else:
             ok = sum(1 for _, _, d in G.edges(data=True)
                      if d.get('mean_width_m', 0.0) >= min_w_v)
-            traversable[f'preferred_pct_{vtype}'] = round(100.0 * ok / n_edges, 1)
+            preferred[f'preferred_pct_{vtype}'] = round(100.0 * ok / n_edges, 1)
 
-    summary = {
+    return {
         'n_nodes':                G.number_of_nodes(),
         'n_edges':                G.number_of_edges(),
         'n_components':           len(components),
@@ -660,9 +697,13 @@ def get_graph_summary(G: nx.Graph) -> dict:
         'width_p25_m':            round(p25_w, 2),
         'width_p50_m':            round(p50_w, 2),
         'width_p75_m':            round(p75_w, 2),
-        **traversable,
+        **preferred,
+        # Urban canopy shadow correction metadata
+        'is_urban_scene':         is_urban_scene,
+        'junction_density':       round(junction_density, 3),
+        'urban_edges_corrected':  n_urban_corrected,
     }
-    return summary
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
