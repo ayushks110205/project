@@ -66,15 +66,19 @@ class GraphConfig:
 _SURFACE_MULTIPLIERS: Dict[str, Dict[str, float]] = {
     'pedestrian': {'paved': 1.0, 'unpaved': 1.2, 'damaged': 1.5,  '': 1.2},
     'motorcycle': {'paved': 1.0, 'unpaved': 1.5, 'damaged': 2.5,  '': 1.5},
-    'car':        {'paved': 1.0, 'unpaved': 2.0, 'damaged': float('inf'), '': 2.0},
+    'car':        {'paved': 1.0, 'unpaved': 2.0, 'damaged': 4.0,  '': 2.0},
     'truck':      {'paved': 1.0, 'unpaved': 3.0, 'damaged': float('inf'), '': 3.0},
 }
 
+# Minimum *mean* width (metres) for a segment to be traversable by a vehicle.
+# We use mean_width_m (not min_width_m) so that a single narrow junction pixel
+# doesn't block the whole segment — common at DeepGlobe's 0.5 m/px GSD.
+# Thresholds are kept conservative but realistic for satellite road widths.
 _MIN_WIDTH_M: Dict[str, float] = {
-    'pedestrian': 0.0,
-    'motorcycle': 1.5,
-    'car':        3.0,
-    'truck':      6.0,
+    'pedestrian': 0.0,   # footpaths allowed
+    'motorcycle': 1.0,   # ~2 skeleton pixels wide
+    'car':        2.0,   # ~4 skeleton pixels wide  (lowered from 3.0)
+    'truck':      4.0,   # ~8 skeleton pixels wide  (lowered from 6.0)
 }
 
 VEHICLE_TYPES: List[str] = ['pedestrian', 'motorcycle', 'car', 'truck']
@@ -151,11 +155,16 @@ def _edge_length_m(pixel_path: List[Tuple[int, int]], gsd: float) -> float:
 
 
 def _vehicle_cost(length_m: float,
-                  min_width_m: float,
+                  mean_width_m: float,
                   dominant_surface: str,
                   vehicle: str) -> float:
-    """Compute a single vehicle cost for one edge."""
-    if min_width_m < _MIN_WIDTH_M[vehicle]:
+    """Compute a single vehicle cost for one edge.
+
+    Uses *mean_width_m* (not min_width_m) for the traversability check so
+    that isolated narrow junction pixels don't block an otherwise wide road
+    segment — a common artefact of the medial-axis skeleton at 0.5 m/px GSD.
+    """
+    if mean_width_m < _MIN_WIDTH_M[vehicle]:
         return float('inf')
     mult = _SURFACE_MULTIPLIERS[vehicle].get(dominant_surface, 1.5)
     if mult == float('inf'):
@@ -367,9 +376,10 @@ class RoadGraph:
                 if G[src_id][dst_id]['length_m'] <= seg['length_m']:
                     continue
 
+            # Use mean_width_m for cost computation — see _vehicle_cost() note.
             costs = {
                 f'cost_{v}': _vehicle_cost(
-                    seg['length_m'], seg['min_width_m'],
+                    seg['length_m'], seg['mean_width_m'],
                     seg['dominant_surface'], v)
                 for v in VEHICLE_TYPES
             }
@@ -694,9 +704,15 @@ def draw_routes(satellite_rgb: np.ndarray,
     # ── Legend ────────────────────────────────────────────────────────────────
     _LEGEND_LABELS = {1: 'cyan', 2: 'yellow', 3: 'magenta'}
     y0 = 18
+    vehicle_shown = routes[0].vehicle_type if routes else 'n/a'
+    # Header line — vehicle type
+    cv2.putText(canvas, f"Vehicle: {vehicle_shown}", (8, y0),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+    y0 += 18
     for route in routes:
         label = (f"Route {route.rank} ({_LEGEND_LABELS.get(route.rank,'?')}): "
-                 f"{route.total_distance_m:.0f}m, {route.dominant_surface}")
+                 f"{route.total_distance_m:.0f}m, {route.dominant_surface}, "
+                 f"w={route.mean_width_m:.1f}m")
         cv2.putText(canvas, label, (8, y0),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                     _ROUTE_COLORS_BGR.get(route.rank, (200, 200, 200)), 1,
