@@ -75,10 +75,10 @@ _SURFACE_MULTIPLIERS: Dict[str, Dict[str, float]] = {
 # doesn't block the whole segment — common at DeepGlobe's 0.5 m/px GSD.
 # Thresholds are kept conservative but realistic for satellite road widths.
 _MIN_WIDTH_M: Dict[str, float] = {
-    'pedestrian': 0.0,   # footpaths allowed
-    'motorcycle': 1.0,   # ~2 skeleton pixels wide
-    'car':        2.0,   # ~4 skeleton pixels wide  (lowered from 3.0)
-    'truck':      4.0,   # ~8 skeleton pixels wide  (lowered from 6.0)
+    'pedestrian': 0.0,   # footpaths / narrow alleys
+    'motorcycle': 0.5,   # ~1 skeleton pixel wide
+    'car':        1.5,   # ~3 skeleton pixels wide  (lowered from 2.0)
+    'truck':      2.5,   # ~5 skeleton pixels wide  (lowered from 4.0)
 }
 
 VEHICLE_TYPES: List[str] = ['pedestrian', 'motorcycle', 'car', 'truck']
@@ -596,8 +596,10 @@ def get_graph_summary(G: nx.Graph) -> dict:
 
     Returns:
         dict with keys:
-            n_nodes, n_edges, n_components,
-            largest_component_size, n_endpoints, n_junctions.
+            n_nodes, n_edges, n_components, largest_component_size,
+            n_endpoints, n_junctions, mean_width_m (edge mean),
+            width_p25_m, width_p50_m, width_p75_m,
+            plus per-vehicle traversable_edges_pct_<vehicle> keys.
     """
     components = list(nx.connected_components(G))
     largest_cc_size = max((len(c) for c in components), default=0)
@@ -605,14 +607,44 @@ def get_graph_summary(G: nx.Graph) -> dict:
         1 for _, d in G.nodes(data=True) if d.get('node_type') == 'endpoint')
     n_junctions = sum(
         1 for _, d in G.nodes(data=True) if d.get('node_type') == 'junction')
-    return {
+
+    # Width statistics over all edges
+    widths = [d.get('mean_width_m', 0.0) for _, _, d in G.edges(data=True)]
+    if widths:
+        w_arr = np.array(widths, dtype=np.float32)
+        mean_w  = float(np.mean(w_arr))
+        p25_w   = float(np.percentile(w_arr, 25))
+        p50_w   = float(np.percentile(w_arr, 50))
+        p75_w   = float(np.percentile(w_arr, 75))
+    else:
+        mean_w = p25_w = p50_w = p75_w = 0.0
+
+    # Fraction of edges traversable per vehicle type (cost < inf)
+    traversable: dict = {}
+    n_edges = G.number_of_edges()
+    for vtype in VEHICLE_TYPES:
+        cost_key = f'cost_{vtype}'
+        if n_edges == 0:
+            traversable[f'traversable_pct_{vtype}'] = 0.0
+        else:
+            ok = sum(1 for _, _, d in G.edges(data=True)
+                     if d.get(cost_key, float('inf')) < float('inf'))
+            traversable[f'traversable_pct_{vtype}'] = round(100.0 * ok / n_edges, 1)
+
+    summary = {
         'n_nodes':                G.number_of_nodes(),
         'n_edges':                G.number_of_edges(),
         'n_components':           len(components),
         'largest_component_size': largest_cc_size,
         'n_endpoints':            n_endpoints,
         'n_junctions':            n_junctions,
+        'mean_width_m':           round(mean_w, 2),
+        'width_p25_m':            round(p25_w, 2),
+        'width_p50_m':            round(p50_w, 2),
+        'width_p75_m':            round(p75_w, 2),
+        **traversable,
     }
+    return summary
 
 
 # ─────────────────────────────────────────────────────────────────────────────

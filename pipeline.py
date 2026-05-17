@@ -720,6 +720,10 @@ class SatellitePipeline:
               f"largest_cc={graph_summary['largest_component_size']}  "
               f"endpoints={graph_summary['n_endpoints']}  "
               f"junctions={graph_summary['n_junctions']}")
+        print(f"  Tier2-Width   mean={graph_summary.get('mean_width_m',0):.2f}m  "
+              f"p25={graph_summary.get('width_p25_m',0):.2f}m  "
+              f"p50={graph_summary.get('width_p50_m',0):.2f}m  "
+              f"p75={graph_summary.get('width_p75_m',0):.2f}m")
 
         # ── Step 3: Auto-pick src / dst ───────────────────────────────────────
         src_node, dst_node = pick_src_dst_auto(G)
@@ -732,8 +736,10 @@ class SatellitePipeline:
             else:
                 routes_by_vehicle[vtype] = find_top3_routes(
                     G, src_node, dst_node, vtype)
-            n = len(routes_by_vehicle[vtype])
-            print(f"  Tier2-{vtype:<12s} {n} route(s) found")
+            n   = len(routes_by_vehicle[vtype])
+            pct = graph_summary.get(f'traversable_pct_{vtype}', '?')
+            print(f"  Tier2-{vtype:<12s} {n} route(s) found  "
+                  f"[traversable edges: {pct}%]")
 
         # ── Step 5: Draw route visualisation ──────────────────────────────────
         # Prefer default_vehicle; fall back to first vehicle with routes so

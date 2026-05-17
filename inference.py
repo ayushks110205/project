@@ -393,13 +393,20 @@ def run_tier2_inference(image_path:    str,
           f"Edges : {graph_summary['n_edges']}    "
           f"Components : {graph_summary['n_components']}    "
           f"Largest CC : {graph_summary['largest_component_size']}")
+    print(f"  Width : mean={graph_summary.get('mean_width_m',0):.2f}m  "
+          f"p25={graph_summary.get('width_p25_m',0):.2f}m  "
+          f"p50={graph_summary.get('width_p50_m',0):.2f}m  "
+          f"p75={graph_summary.get('width_p75_m',0):.2f}m")
+    print(f"  Thresholds : pedestrian≥0.0m  motorcycle≥0.5m  "
+          f"car≥1.5m  truck≥2.5m")
     for vtype in VEHICLE_TYPES:
+        pct = graph_summary.get(f'traversable_pct_{vtype}', '?')
         rts = routes_by_vehicle[vtype]
-        print(f"  {vtype:<12s}: ", end='')
+        print(f"  {vtype:<12s}: traversable={pct}%  ", end='')
         if not rts:
             print("no route found")
         else:
-            parts = [f"R{r.rank}={r.total_distance_m:.0f}m({r.dominant_surface})" for r in rts]
+            parts = [f"R{r.rank}={r.total_distance_m:.0f}m({r.dominant_surface},w={r.mean_width_m:.1f}m)" for r in rts]
             print('  '.join(parts))
     print(f"{sep}\n")
 
