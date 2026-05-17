@@ -323,6 +323,47 @@ result = pipe.run('satellite.jpg', save_dir='./output')
 # result['figure_path'] → 5-panel composite PNG
 ```
 
+### REST API (FastAPI server)
+
+```bash
+# Start locally
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+# → Interactive docs at http://localhost:8000/docs
+```
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET  /`        | Liveness probe (HuggingFace health check) |
+| `GET  /health`  | Model load status + device + Tier availability |
+| `POST /analyze` | Road mask + Tier 1 width/surface analysis |
+| `POST /route`   | + Tier 2 vehicle-aware graph routing |
+| `POST /full`    | All 4 stages + Tier 1 + Tier 2 |
+
+```bash
+# Example — road extraction + Tier 2 routing for a truck
+curl -X POST "http://localhost:8000/route?vehicle=truck&include_images=true" \
+     -F "file=@741856_sat.jpg" | python -m json.tool
+```
+
+All image outputs are returned as **base64-encoded PNGs** in the JSON response.  
+Pass `?include_images=false` to get JSON-only (faster, smaller payload).
+
+#### Docker / HuggingFace Spaces
+
+```bash
+# Build and run locally
+docker build -t deepglobe-api .
+docker run -p 7860:7860 \
+  -e ROAD_WEIGHTS=/app/weights/road_model_best.pth \
+  -e LANDCOVER_WEIGHTS=/app/weights/landcover_best.pth \
+  -e BUILDING_WEIGHTS=/app/weights/building_model_best.pth \
+  -v /path/to/weights:/app/weights \
+  deepglobe-api
+```
+
+> On HuggingFace Spaces (Docker SDK): push the repo, set weight paths as  
+> **Space Secrets**, and the server starts automatically on port 7860.
+
 ---
 
 ## 🧠 Model Architecture Details

@@ -1,0 +1,38 @@
+# ── Training artefacts (large, not needed in container) ───────────────────────
+results of training road/
+results of road inpainting/
+results of training landcover/
+results of training building (masachusses dataset)/
+*.pth
+*.pt
+*.ckpt
+
+# ── Python cache ───────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Git ────────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── IDE / OS ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# ── Jupyter ────────────────────────────────────────────────────────────────────
+*.ipynb
+.ipynb_checkpoints/
+
+# ── Temporary results (generated at runtime) ──────────────────────────────────
+results/
+/tmp/
