@@ -35,7 +35,10 @@ import cv2
 import numpy as np
 import torch
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
 from PIL import Image
 from pydantic import BaseModel
 
@@ -146,6 +149,39 @@ app = FastAPI(
     lifespan = lifespan,
 )
 
+# ── 1. CORS  (required for any browser frontend / HuggingFace Spaces UI) ──────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins  = ["*"],
+    allow_methods  = ["*"],
+    allow_headers  = ["*"],
+)
+
+# ── 2. Upload size cap  (20 MB — prevents silent OOM on HF Spaces) ────────────
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024   # 20 MB
+
+class _MaxUploadSize(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        cl = request.headers.get('content-length')
+        if cl and int(cl) > _MAX_UPLOAD_BYTES:
+            return JSONResponse(
+                {'error': f'File too large (max {_MAX_UPLOAD_BYTES // 1024 // 1024} MB)'},
+                status_code=413,
+            )
+        return await call_next(request)
+
+app.add_middleware(_MaxUploadSize)
+
+
+# ── 3. Root endpoint  (HuggingFace Spaces health check hits / not /health) ────
+@app.get('/', tags=['System'])
+def root():
+    """API root — used by HuggingFace Spaces liveness probe."""
+    return {
+        'message': 'DeepGlobe Satellite Road Intelligence API',
+        'docs':    '/docs',
+        'health':  '/health',
+    }
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
