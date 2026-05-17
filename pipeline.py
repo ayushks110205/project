@@ -737,9 +737,9 @@ class SatellitePipeline:
                 routes_by_vehicle[vtype] = find_top3_routes(
                     G, src_node, dst_node, vtype)
             n   = len(routes_by_vehicle[vtype])
-            pct = graph_summary.get(f'traversable_pct_{vtype}', '?')
+            pct = graph_summary.get(f'preferred_pct_{vtype}', '?')
             print(f"  Tier2-{vtype:<12s} {n} route(s) found  "
-                  f"[traversable edges: {pct}%]")
+                  f"[preferred edges: {pct}%]")
 
         # ── Step 5: Draw route visualisation ──────────────────────────────────
         # Prefer default_vehicle; fall back to first vehicle with routes so

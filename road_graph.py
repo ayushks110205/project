@@ -163,12 +163,28 @@ def _vehicle_cost(length_m: float,
     Uses *mean_width_m* (not min_width_m) for the traversability check so
     that isolated narrow junction pixels don't block an otherwise wide road
     segment — a common artefact of the medial-axis skeleton at 0.5 m/px GSD.
+
+    Width handling:
+        If the segment is narrower than the vehicle minimum, we apply a heavy
+        **penalty multiplier** rather than returning ``float('inf')``.  This
+        ensures a route is always found when the graph is topologically
+        connected — the router simply strongly prefers wider roads and only
+        uses narrow bottlenecks as a last resort.  A hard ``inf`` is still
+        returned for truly impassable *surfaces* (e.g. truck on damaged road).
     """
-    if mean_width_m < _MIN_WIDTH_M[vehicle]:
-        return float('inf')
     mult = _SURFACE_MULTIPLIERS[vehicle].get(dominant_surface, 1.5)
     if mult == float('inf'):
-        return float('inf')
+        return float('inf')   # truly impassable surface — keep as inf
+
+    # Width penalty: graduated factor so wider roads are always preferred.
+    # If below the minimum width, add a 20× surcharge per unit of deficit.
+    min_w = _MIN_WIDTH_M[vehicle]
+    if min_w > 0 and mean_width_m < min_w:
+        # penalty grows as width shrinks; capped to avoid numerical issues
+        deficit_ratio = min_w / max(mean_width_m, 0.05)
+        width_penalty = min(deficit_ratio * 20.0, 1000.0)
+        mult = mult * width_penalty
+
     return length_m * mult
 
 
@@ -619,17 +635,19 @@ def get_graph_summary(G: nx.Graph) -> dict:
     else:
         mean_w = p25_w = p50_w = p75_w = 0.0
 
-    # Fraction of edges traversable per vehicle type (cost < inf)
+    # Fraction of edges AT OR ABOVE the minimum width for each vehicle.
+    # (Since width violations now produce heavy penalties not inf, this shows
+    # what % of edges are traversed without width penalty — the "preferred" set.)
     traversable: dict = {}
     n_edges = G.number_of_edges()
     for vtype in VEHICLE_TYPES:
-        cost_key = f'cost_{vtype}'
+        min_w_v = _MIN_WIDTH_M[vtype]
         if n_edges == 0:
-            traversable[f'traversable_pct_{vtype}'] = 0.0
+            traversable[f'preferred_pct_{vtype}'] = 0.0
         else:
             ok = sum(1 for _, _, d in G.edges(data=True)
-                     if d.get(cost_key, float('inf')) < float('inf'))
-            traversable[f'traversable_pct_{vtype}'] = round(100.0 * ok / n_edges, 1)
+                     if d.get('mean_width_m', 0.0) >= min_w_v)
+            traversable[f'preferred_pct_{vtype}'] = round(100.0 * ok / n_edges, 1)
 
     summary = {
         'n_nodes':                G.number_of_nodes(),

@@ -398,11 +398,11 @@ def run_tier2_inference(image_path:    str,
           f"p50={graph_summary.get('width_p50_m',0):.2f}m  "
           f"p75={graph_summary.get('width_p75_m',0):.2f}m")
     print(f"  Thresholds : pedestrian≥0.0m  motorcycle≥0.5m  "
-          f"car≥1.5m  truck≥2.5m")
+          f"car≥1.5m  truck≥2.5m  (below=penalty, not blocked)")
     for vtype in VEHICLE_TYPES:
-        pct = graph_summary.get(f'traversable_pct_{vtype}', '?')
+        pct = graph_summary.get(f'preferred_pct_{vtype}', '?')
         rts = routes_by_vehicle[vtype]
-        print(f"  {vtype:<12s}: traversable={pct}%  ", end='')
+        print(f"  {vtype:<12s}: preferred={pct}%  ", end='')
         if not rts:
             print("no route found")
         else:
