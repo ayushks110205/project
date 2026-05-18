@@ -1,4 +1,15 @@
+---
+title: DeepGlobe Satellite Road Intelligence API
+emoji: 🛰️
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # 🛰️ DeepGlobe Satellite Image Analysis Pipeline
+
 
 A four-stage end-to-end pipeline for satellite imagery analysis, trained on the **DeepGlobe 2018** and **Massachusetts Buildings** datasets — extended with a **Tier 1 Road Intelligence Layer** for per-pixel width estimation, surface type classification, and vehicle-aware routing.
 
