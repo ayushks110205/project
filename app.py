@@ -230,14 +230,30 @@ async def _read_upload(file: UploadFile) -> tuple[np.ndarray, np.ndarray, str]:
 
 def _road_predict(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    Run Stage 1 road model.
+    Run Stage 1 road model, then subtract Stage 4 building footprints
+    to remove false positives caused by building roof textures.
     Returns (road_mask uint8 0/255, prob float32 0-1) both (H,W).
     """
-    model = _require_model('road')
+    from scipy.ndimage import binary_dilation
+
+    model  = _require_model('road')
     tensor = val_transform(image=rgb)['image'].unsqueeze(0).to(_device)
     with torch.no_grad():
         prob = torch.sigmoid(model(tensor)).squeeze().cpu().numpy()
     mask = (prob > 0.5).astype(np.uint8) * 255
+
+    # ── Building mask subtraction ─────────────────────────────────────────────
+    # Only runs if the building model is loaded; gracefully skips if not.
+    # Dilate 3px to also strip road pixels that hug building edges.
+    if 'building' in _models:
+        building_mask   = _building_predict(rgb)          # (H,W) 0/255
+        building_binary = (building_mask > 0)
+        building_dilated = binary_dilation(building_binary, iterations=3)
+        mask[building_dilated] = 0
+        prob[building_dilated] = 0.0
+        n_removed = int(building_dilated.sum())
+        print(f"🏢  Building subtraction: {n_removed} road pixels removed")
+
     return mask, prob
 
 

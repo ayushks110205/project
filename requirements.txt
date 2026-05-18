@@ -43,6 +43,7 @@ tqdm>=4.64.0                      # Training progress bars
 # ── Miscellaneous ─────────────────────────────────────────────────────────────
 scikit-image>=0.19.0              # SSIM computation in evaluate_inpainting.py
 scikit-learn>=1.1.0               # Metrics helpers
+scipy>=1.10.0                     # binary_dilation for building subtraction in app.py
 
 # ── API Server ────────────────────────────────────────────────────────────────
 fastapi>=0.110.0                  # app.py REST API server
