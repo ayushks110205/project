@@ -22,13 +22,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ── Copy project source ────────────────────────────────────────────────────────
 COPY . .
 
-# ── Model weights (mount at runtime or bake in via HF dataset) ────────────────
-# Set env vars to point at your weight files inside the container.
-# On HuggingFace Spaces, add these as Space Secrets or mount a dataset:
-#   ROAD_WEIGHTS      /app/weights/road_model_best.pth
-#   LANDCOVER_WEIGHTS /app/weights/landcover_best.pth
-#   BUILDING_WEIGHTS  /app/weights/building_model_best.pth
-#   RESULTS_DIR       /tmp/results
+# Model weights are copied from the repo root into /app/ by COPY . .
+# The defaults in app.py already point to these paths:
+#   /app/road_model_best.pth
+#   /app/landcover_best.pth
+#   /app/building_model_best.pth
+# Override via Space Secrets / env vars if needed:
+#   ROAD_WEIGHTS, LANDCOVER_WEIGHTS, BUILDING_WEIGHTS
 ENV RESULTS_DIR=/tmp/results
 
 # ── Port ──────────────────────────────────────────────────────────────────────

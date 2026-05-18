@@ -67,19 +67,13 @@ try:
 except ImportError:
     pass
 
-# ── weight paths  (env-overridable, Kaggle defaults) ──────────────────────────
+# ── weight paths  (env-overridable; defaults match HuggingFace Spaces /app layout) ──
 _W = {
-    'road':      os.getenv('ROAD_WEIGHTS',
-                 '/kaggle/input/datasets/ayushsingh110205/'
-                 'newly-made-for-improved-road-training/road_model_best.pth'),
-    'landcover': os.getenv('LANDCOVER_WEIGHTS',
-                 '/kaggle/input/datasets/ayushsingh110205/'
-                 'best-path/landcover_best.pth'),
-    'building':  os.getenv('BUILDING_WEIGHTS',
-                 '/kaggle/input/datasets/ayushsingh110205/'
-                 'best-path/building_model_best.pth'),
+    'road':      os.getenv('ROAD_WEIGHTS',      '/app/road_model_best.pth'),
+    'landcover': os.getenv('LANDCOVER_WEIGHTS', '/app/landcover_best.pth'),
+    'building':  os.getenv('BUILDING_WEIGHTS',  '/app/building_model_best.pth'),
 }
-RESULTS_DIR = os.getenv('RESULTS_DIR', '/kaggle/working/results/api')
+RESULTS_DIR = os.getenv('RESULTS_DIR', '/tmp/results')
 
 # ── global model registry ──────────────────────────────────────────────────────
 _models:  Dict[str, torch.nn.Module] = {}
@@ -257,8 +251,8 @@ def _road_predict(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return mask, prob
 
 
-def _landcover_predict(rgb: np.ndarray) -> np.ndarray:
-    """Returns (H,W,3) RGB colour map."""
+def _landcover_predict(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Returns ((H,W,3) RGB colour map, (H,W) class-ID array)."""
     model = _require_model('landcover')
     tensor = val_transform(image=rgb)['image'].unsqueeze(0).to(_device)
     with torch.no_grad():
@@ -267,7 +261,7 @@ def _landcover_predict(rgb: np.ndarray) -> np.ndarray:
     out   = np.zeros((h, w, 3), dtype=np.uint8)
     for cls_id, colour in LANDCOVER_COLORS.items():
         out[ids == cls_id] = colour
-    return out
+    return out, ids
 
 
 def _building_predict(rgb: np.ndarray) -> np.ndarray:
@@ -544,19 +538,10 @@ async def full_pipeline(
 
         # ── Stage 3: Land Cover ────────────────────────────────────────────────
         if 'landcover' in _models:
-            lc_map = _landcover_predict(rgb)
-            ids    = np.argmax(  # recompute for class counts
-                torch.softmax(
-                    _models['landcover'](
-                        val_transform(image=rgb)['image'].unsqueeze(0).to(_device)
-                    ), dim=1
-                ).squeeze().cpu().numpy(), axis=0
-            )
-            class_names = ['urban','agriculture','rangeland',
-                           'forest','water','barren','unknown']
-            counts = {
-                class_names[i]: int((ids == i).sum()) for i in range(7)
-            }
+            lc_map, ids = _landcover_predict(rgb)   # one forward pass, get both
+            class_names = ['urban', 'agriculture', 'rangeland',
+                           'forest', 'water', 'barren', 'unknown']
+            counts = {class_names[i]: int((ids == i).sum()) for i in range(7)}
             response['landcover'] = {'pixel_counts': counts}
             if include_images:
                 response['landcover']['map_b64'] = _img_to_b64(
