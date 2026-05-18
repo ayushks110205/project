@@ -20,20 +20,29 @@ A four-stage end-to-end pipeline for satellite imagery analysis, trained on the 
 ```
 Satellite Image
       │
-      ▼
+      ├─────────────────────────────────────────┐
+      ▼                                         ▼
+┌──────────────────────────────────────┐  ┌─────────────────────────────────────────┐
+│  Stage 1 │ Road Extraction           │  │  Stage 4 │ Building Detection           │
+│  DeepLabV3+ ResNet34 │ 512×512       │  │  UnetPlusPlus ResNet50+scse │ 640×640  │
+└──────────────┬───────────────────────┘  └────────────────────┬────────────────────┘
+               │   ◄── building mask subtraction (dilate ×3) ──┘
+               │         (removes roof-texture false positives)
+               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  Stage 1 │ Road Extraction        │ DeepLabV3+ ResNet34  │ 512×512  │
-│  ├─ Tier 1 Module 1 │ Width Estimation    │ Medial Axis DT         │
-│  ├─ Tier 1 Module 2 │ Surface Classifier  │ KMeans on GLCM patches │
-│  └─ Tier 1 Module 3 │ Vehicle Router      │ MCP_Geometric cost map │
-│  Stage 2 │ Road Inpainting        │ Partial Conv U-Net   │ 512×512  │
-│  Stage 3 │ Land Cover (7-class)   │ DeepLabV3+ ResNet34  │ 512×512  │
-│  Stage 4 │ Building Detection     │ UnetPlusPlus ResNet50│ 640×640  │
+│  Corrected Road Mask                                                 │
+│  ├─ Tier 1 M1 │ Width Estimation    │ Medial Axis DT                │
+│  ├─ Tier 1 M2 │ Surface Classifier  │ KMeans on GLCM patches        │
+│  └─ Tier 1 M3 │ Vehicle Router      │ NetworkX graph routing        │
+│  Stage 2 │ Road Inpainting          │ Partial Conv U-Net │ 512×512  │
+│  Stage 3 │ Land Cover (7-class)     │ DeepLabV3+ ResNet34│ 512×512  │
 └──────────────────────────────────────────────────────────────────────┘
       │
       ▼
   5-Panel Composite Visualization  +  5-Panel Tier 1 Intelligence Map
 ```
+
+> **Cross-stage feedback:** Stage 4 (building detection) runs in parallel with Stage 1 and its output is used to *correct* the road mask before any downstream analysis — see [Building-Mask Road Correction](#-building-mask-road-correction) below.
 
 ---
 
@@ -73,6 +82,31 @@ Satellite Image
 | F1        | 0.7151   | 0.7241    |
 
 > Model: UnetPlusPlus + ResNet50 + scse attention | Trained on 137 images, stopped at epoch 38 (early stopping)
+
+---
+
+## 🏢 Building-Mask Road Correction
+
+Building rooftops share many visual features with paved roads (grey tones, rectangular edges, smooth texture) and are a common source of **false-positive road pixels**. To eliminate this artefact, `_road_predict()` in `app.py` automatically applies a building-mask correction whenever the Stage 4 model is loaded:
+
+```python
+if 'building' in _models:
+    building_mask    = _building_predict(rgb)              # (H,W) 0/255
+    building_binary  = (building_mask > 0)
+    building_dilated = binary_dilation(building_binary, iterations=3)
+    mask[building_dilated] = 0     # zero binary road mask
+    prob[building_dilated] = 0.0   # zero confidence map (fixes heatmap)
+    n_removed = int(building_dilated.sum())
+    print(f"🏢  Building subtraction: {n_removed} road pixels removed")
+```
+
+| Detail | Value |
+|--------|-------|
+| Dilation radius | 3 px — creates a small buffer so road pixels *hugging* building edges are also removed |
+| Both `mask` and `prob` zeroed | The prob map feeds the confidence heatmap visualisation; zeroing only the mask would leave ghost activations |
+| Graceful degradation | The `if 'building' in _models` guard means `/analyze`, `/route`, and `/full` still work correctly even when building weights are absent |
+| Zero retraining | Pure post-processing patch — no model changes, no extra training |
+| Endpoints fixed | `_road_predict()` is the single call point for all three endpoints, so the fix applies everywhere automatically |
 
 ---
 
@@ -434,6 +468,8 @@ docker run -p 7860:7860 \
 - **Cosine Annealing** LR schedule with warm restarts for building training
 - **Morphological post-processing** (opening + closing) on building predictions to clean noise
 - **Instance segmentation** via connected components for per-building instance maps
+- **Cross-stage building subtraction** — `_road_predict()` calls `_building_predict()` on the same image and removes dilated building footprints from the road mask *and* probability map before returning, eliminating roof-texture false positives with zero retraining
+- **Dual-array zeroing** — both the binary `mask` and the float `prob` array are zeroed at building pixels; zeroing only the mask would leave ghost activations in the confidence heatmap
 - **Vectorised cost surface** — Tier 1 router builds the entire MCP cost grid with NumPy array ops; no Python-level per-pixel loop
 - **KDTree label propagation** — Tier 1 classifier samples up to 200 skeleton points then propagates labels to all remaining skeleton pixels via nearest-neighbour lookup, avoiding an O(N) prediction loop
 - **Auto-snap endpoints** — router snaps arbitrary pixel coordinates to the nearest skeleton pixel before MCP traversal, preventing "no path found" failures on off-skeleton inputs
