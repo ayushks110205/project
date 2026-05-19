@@ -31,6 +31,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import networkx as nx
 import numpy as np
+from scipy.ndimage import binary_dilation as _bin_dilate
 
 # Urban canopy shadow correction (applied after graph build)
 try:
@@ -379,6 +380,18 @@ class RoadGraph:
 
         if not skel.any():
             return G  # empty graph for empty skeleton
+
+        # Bridge thin gaps caused by 1-2 px dirt paths / building subtraction.
+        # Dilate by 2 iterations then re-skeletonize to reconnect fragments.
+        # We re-import skeletonize here to avoid a top-level circular dep.
+        try:
+            from skimage.morphology import skeletonize as _skel_fn
+            skel_dilated = _bin_dilate(skel, iterations=2)
+            skel = _skel_fn(skel_dilated).astype(bool)
+            print(f"  Skeleton bridging: "
+                  f"{int(skel.sum())} px after gap-fill dilation")
+        except Exception as _e:
+            print(f"  Skeleton bridging skipped ({_e})")
 
         # Step 1: find node pixels
         nbr_counts = _count_skel_neighbours(skel)

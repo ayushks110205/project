@@ -3,9 +3,10 @@ results of training road/
 results of road inpainting/
 results of training landcover/
 results of training building (masachusses dataset)/
-*.pth
-*.pt
-*.ckpt
+# NOTE: *.pth / *.pt / *.ckpt are intentionally NOT excluded here.
+#       The model weights (road_model_best.pth, landcover_best.pth,
+#       building_model_best.pth) must be copied into /app/ by COPY . .
+#       so the server can load them at startup.
 
 # ── Python cache ───────────────────────────────────────────────────────────────
 __pycache__/

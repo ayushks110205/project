@@ -30,6 +30,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import Normalize
+from scipy.ndimage import grey_dilation
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -53,6 +54,29 @@ _SURFACE_COLORS = {
 # ─────────────────────────────────────────────────────────────────────────────
 # Panel builder helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+_SKEL_DILATION = 1   # pixels to grow skeleton lines (1 → 3×3 footprint)
+
+
+def _thicken_rgb_lines(rgb_img: np.ndarray,
+                        iterations: int = _SKEL_DILATION) -> np.ndarray:
+    """
+    Dilate non-black skeleton lines in an RGB image so they render
+    visibly even on small screens.  Uses per-channel grey dilation
+    (max pooling) which preserves the original hue of each line.
+
+    Args:
+        rgb_img    : (H, W, 3) uint8 image with coloured skeleton on black bg.
+        iterations : dilation radius in pixels (1 → 3×3 kernel).
+
+    Returns:
+        (H, W, 3) uint8 image with thicker lines.
+    """
+    size = 2 * iterations + 1  # kernel side length
+    out  = np.zeros_like(rgb_img)
+    for ch in range(3):
+        out[:, :, ch] = grey_dilation(rgb_img[:, :, ch], size=(size, size))
+    return out
 
 def _build_combined_map(image_rgb:   np.ndarray,
                          tier1:       dict,
@@ -97,18 +121,31 @@ def _build_combined_map(image_rgb:   np.ndarray,
 
     rows, cols = np.where(skeleton)
 
+    # Paint blended colours onto a separate lines layer so we can dilate
+    # afterwards without expanding the dark background.
+    lines_layer = np.zeros_like(canvas)   # float32, starts transparent
+
     for r, c in zip(rows, cols):
-        rt    = str(road_type_map[r, c])
-        surf  = str(surface_map[r, c])
+        rt   = str(road_type_map[r, c])
+        surf = str(surface_map[r, c])
 
         rt_col   = _ROAD_TYPE_COLORS.get(rt,   np.array([200, 200, 200], dtype=np.uint8))
         surf_col = _SURFACE_COLORS.get(surf, np.array([200, 200, 200], dtype=np.uint8))
 
-        # Blend road type colour
-        blended = canvas[r, c] * (1 - alpha_road) + rt_col.astype(np.float32) * alpha_road
-        # Blend surface type colour on top
+        # Blend road-type colour, then surface colour on top
+        blended = rt_col.astype(np.float32) * alpha_road
         blended = blended * (1 - alpha_surf) + surf_col.astype(np.float32) * alpha_surf
-        canvas[r, c] = np.clip(blended, 0, 255)
+        lines_layer[r, c] = np.clip(blended, 0, 255)
+
+    # Thicken skeleton lines (grey dilation per channel)
+    size = 2 * _SKEL_DILATION + 1
+    for ch in range(3):
+        lines_layer[:, :, ch] = grey_dilation(
+            lines_layer[:, :, ch].astype(np.uint8), size=(size, size))
+
+    # Composite: where a line exists, overwrite the dark canvas
+    has_line = lines_layer.max(axis=2) > 0
+    canvas[has_line] = lines_layer[has_line]
 
     return canvas.astype(np.uint8)
 
@@ -211,7 +248,7 @@ def save_tier1_figure(image_rgb:   np.ndarray,
     axes[1].axis('off')
 
     # ── Panel 3: Width Heatmap ────────────────────────────────────────────────
-    axes[2].imshow(heatmap)
+    axes[2].imshow(_thicken_rgb_lines(heatmap))
     axes[2].set_title('Road Width Heatmap\n(plasma, skeleton only)', **panel_style)
     axes[2].axis('off')
     # Colourbar
@@ -231,8 +268,11 @@ def save_tier1_figure(image_rgb:   np.ndarray,
             plt.setp(cb.ax.yaxis.get_ticklabels(), color='white')
 
     # ── Panel 4: Surface Type Overlay ─────────────────────────────────────────
-    axes[3].imshow(surface_overlay)
-    axes[3].set_title('Road Surface Type\n(Module 2 – KMeans)', **panel_style)
+    axes[3].imshow(_thicken_rgb_lines(surface_overlay))
+    # NOTE: KMeans on arid/semi-arid imagery tends to misclassify
+    #       bare-soil road edges as 'damaged'.  Flag this as a known
+    #       classifier limitation when reviewing results.
+    axes[3].set_title('Road Surface Type\n(KMeans ⚠ arid-terrain bias)', **panel_style)
     axes[3].axis('off')
     surf_patches = _make_legend_patches(_SURFACE_COLORS, prefix='')
     axes[3].legend(handles=surf_patches, loc='lower left',

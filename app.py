@@ -238,11 +238,18 @@ def _road_predict(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
     # ── Building mask subtraction ─────────────────────────────────────────────
     # Only runs if the building model is loaded; gracefully skips if not.
-    # Dilate 3px to also strip road pixels that hug building edges.
+    # Building model outputs 640×640; road mask is 512×512 — resize first.
+    # INTER_NEAREST preserves hard binary edges (no blurred intermediate values).
     if 'building' in _models:
-        building_mask   = _building_predict(rgb)          # (H,W) 0/255
-        building_binary = (building_mask > 0)
-        building_dilated = binary_dilation(building_binary, iterations=3)
+        building_mask = _building_predict(rgb)              # (640,640) 0/255
+        road_h, road_w = mask.shape                         # always 512×512
+        building_mask_resized = cv2.resize(
+            building_mask,
+            (road_w, road_h),
+            interpolation=cv2.INTER_NEAREST,
+        )                                                    # now (512,512)
+        building_binary  = (building_mask_resized > 0)
+        building_dilated = binary_dilation(building_binary, iterations=1)   # was 3 — reduced to avoid eating road pixels along compound walls
         mask[building_dilated] = 0
         prob[building_dilated] = 0.0
         n_removed = int(building_dilated.sum())

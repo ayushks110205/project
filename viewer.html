@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>DeepGlobe Satellite Road Intelligence — Viewer</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    :root{
+      --bg:#0d1117;--surface:#161b22;--card:#1c2330;--border:#30363d;
+      --accent:#238636;--a2:#1f6feb;--text:#c9d1d9;--muted:#8b949e;
+      --road:#58a6ff;--paved:#3fb950;--unpaved:#d29922;--damaged:#f85149;
+      --lc0:#00ffff;--lc1:#ffff00;--lc2:#ff00ff;--lc3:#00ff00;
+      --lc4:#0000ff;--lc5:#ffffff;--lc6:#222;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+
+    /* ── Header ── */
+    header{
+      background:linear-gradient(135deg,#0d1117,#161b22);
+      border-bottom:1px solid var(--border);
+      padding:1.25rem 2rem;display:flex;align-items:center;gap:1rem
+    }
+    header .logo{font-size:2rem}
+    header h1{font-size:1.35rem;font-weight:700;color:#e6edf3}
+    header p{font-size:.78rem;color:var(--muted);margin-top:.15rem}
+
+    main{max-width:1280px;margin:0 auto;padding:2rem}
+
+    /* ── Tabs ── */
+    .tabs{display:flex;gap:.5rem;margin-bottom:1.5rem;border-bottom:1px solid var(--border);padding-bottom:.75rem}
+    .tab{
+      padding:.55rem 1.25rem;border-radius:8px;border:1px solid transparent;
+      font-size:.875rem;font-weight:600;cursor:pointer;
+      background:transparent;color:var(--muted);transition:all .2s
+    }
+    .tab:hover{color:var(--text);border-color:var(--border)}
+    .tab.active{background:var(--a2);color:#fff;border-color:var(--a2)}
+
+    /* ── Upload zone ── */
+    .upload-zone{
+      border:2px dashed var(--border);border-radius:12px;padding:2.5rem;
+      text-align:center;cursor:pointer;transition:all .25s;background:var(--surface)
+    }
+    .upload-zone:hover,.upload-zone.drag{border-color:var(--a2);background:#1a2332}
+    .upload-zone .icon{font-size:2.5rem;margin-bottom:.75rem}
+    .upload-zone h2{font-size:1rem;font-weight:600;margin-bottom:.4rem}
+    .upload-zone p{color:var(--muted);font-size:.82rem}
+    #fileInput{display:none}
+
+    /* ── Preview ── */
+    #preview-wrap{display:none;margin-top:1.25rem;border-radius:10px;overflow:hidden;border:1px solid var(--border)}
+    #preview-wrap img{width:100%;max-height:220px;object-fit:contain;background:#000}
+
+    /* ── Controls row ── */
+    .controls{display:flex;gap:.75rem;margin-top:1.25rem;flex-wrap:wrap;align-items:center}
+    .toggle{
+      display:flex;align-items:center;gap:.45rem;
+      background:var(--card);border:1px solid var(--border);
+      border-radius:8px;padding:.5rem .9rem;cursor:pointer;transition:border-color .2s
+    }
+    .toggle input{accent-color:var(--a2);width:15px;height:15px;cursor:pointer}
+    .toggle span{font-size:.83rem;font-weight:500}
+    .select-wrap{
+      display:flex;align-items:center;gap:.5rem;
+      background:var(--card);border:1px solid var(--border);
+      border-radius:8px;padding:.5rem .9rem
+    }
+    .select-wrap label{font-size:.83rem;color:var(--muted)}
+    .select-wrap select{
+      background:transparent;border:none;color:var(--text);
+      font-size:.83rem;font-weight:600;outline:none;cursor:pointer
+    }
+    .btn-run{
+      margin-left:auto;
+      background:linear-gradient(135deg,var(--a2),#388bfd);
+      color:#fff;border:none;border-radius:8px;
+      padding:.65rem 2rem;font-size:.9rem;font-weight:700;
+      cursor:pointer;transition:opacity .2s
+    }
+    .btn-run:hover{opacity:.85}
+    .btn-run:disabled{opacity:.4;cursor:not-allowed}
+
+    /* ── Spinner ── */
+    #spinner{display:none;text-align:center;margin-top:2rem}
+    .loader{width:44px;height:44px;border:5px solid var(--border);border-top-color:var(--a2);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto .75rem}
+    @keyframes spin{to{transform:rotate(360deg)}}
+
+    /* ── Error ── */
+    #error-box{
+      display:none;background:rgba(248,81,73,.1);border:1px solid var(--damaged);
+      border-radius:10px;padding:.9rem 1.25rem;margin-top:1.25rem;color:var(--damaged);font-size:.875rem
+    }
+
+    /* ── Results ── */
+    #results{display:none;margin-top:2rem}
+    .section-title{
+      font-size:.95rem;font-weight:700;color:#e6edf3;
+      border-left:4px solid var(--a2);padding-left:.7rem;margin-bottom:.9rem
+    }
+    .section{margin-bottom:2rem}
+
+    /* Stats grid */
+    .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.9rem;margin-bottom:1.25rem}
+    .stat-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:.9rem;text-align:center}
+    .stat-card .label{font-size:.72rem;color:var(--muted);margin-bottom:.25rem}
+    .stat-card .value{font-size:1.3rem;font-weight:700;color:var(--road);word-break:break-all}
+    .stat-card .unit{font-size:.68rem;color:var(--muted)}
+
+    /* Pills */
+    .pill-row{display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1.25rem}
+    .pill{border-radius:20px;padding:.3rem .9rem;font-size:.78rem;font-weight:600}
+    .pill.paved{background:rgba(63,185,80,.15);color:var(--paved);border:1px solid var(--paved)}
+    .pill.unpaved{background:rgba(210,153,34,.15);color:var(--unpaved);border:1px solid var(--unpaved)}
+    .pill.damaged{background:rgba(248,81,73,.15);color:var(--damaged);border:1px solid var(--damaged)}
+    .pill.urban{background:rgba(0,255,255,.1);color:var(--lc0);border:1px solid var(--lc0)}
+    .pill.agriculture{background:rgba(255,255,0,.1);color:var(--lc1);border:1px solid var(--lc1)}
+    .pill.rangeland{background:rgba(255,0,255,.1);color:var(--lc2);border:1px solid var(--lc2)}
+    .pill.forest{background:rgba(0,255,0,.1);color:var(--lc3);border:1px solid var(--lc3)}
+    .pill.water{background:rgba(0,0,255,.2);color:#7ea6ff;border:1px solid #7ea6ff}
+    .pill.barren{background:rgba(255,255,255,.08);color:#ddd;border:1px solid #555}
+    .pill.generic{background:rgba(255,255,255,.05);color:var(--muted);border:1px solid var(--border)}
+
+    /* Image grid */
+    .img-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:1.1rem;margin-bottom:1.5rem}
+    .img-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+    .img-card .img-title{padding:.55rem 1rem;font-size:.78rem;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)}
+    .img-card img{width:100%;display:block}
+
+    /* Full-width figure */
+    .full-fig{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:1.5rem}
+    .full-fig .fig-title{padding:.55rem 1rem;font-size:.78rem;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)}
+    .full-fig img{width:100%;display:block}
+
+    /* Route table */
+    .route-table{width:100%;border-collapse:collapse;font-size:.82rem;margin-bottom:1.25rem}
+    .route-table th{background:var(--surface);color:var(--muted);padding:.5rem .75rem;text-align:left;border-bottom:1px solid var(--border);font-weight:600}
+    .route-table td{padding:.5rem .75rem;border-bottom:1px solid #21262d;color:var(--text)}
+    .route-table tr:last-child td{border:none}
+    .badge{border-radius:6px;padding:.15rem .55rem;font-size:.72rem;font-weight:700}
+    .badge.best{background:rgba(63,185,80,.2);color:var(--paved)}
+    .badge.v1{background:rgba(31,111,235,.2);color:#7ea6ff}
+    .badge.v2{background:rgba(210,153,34,.2);color:var(--unpaved)}
+    .badge.v3{background:rgba(248,81,73,.2);color:var(--damaged)}
+  </style>
+</head>
+<body>
+
+<header>
+  <span class="logo">🛰️</span>
+  <div>
+    <h1>DeepGlobe Satellite Road Intelligence</h1>
+    <p>Upload a satellite image → choose an endpoint → see every layer rendered in-browser</p>
+  </div>
+</header>
+
+<main>
+  <!-- ── Tabs ── -->
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('analyze')">🛣️ Analyze</button>
+    <button class="tab"        onclick="switchTab('route')"  >🗺️ Route</button>
+    <button class="tab"        onclick="switchTab('full')"   >🌍 Full Pipeline</button>
+  </div>
+
+  <!-- ── Upload ── -->
+  <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+    <div class="icon">📷</div>
+    <h2>Drop a satellite image here</h2>
+    <p>or click to browse — JPG / PNG / TIFF</p>
+    <input type="file" id="fileInput" accept="image/*"/>
+  </div>
+
+  <!-- ── Preview ── -->
+  <div id="preview-wrap"><img id="preview" src="" alt="Preview"/></div>
+
+  <!-- ── Controls (rendered per-tab by JS) ── -->
+  <div class="controls" id="controls"></div>
+
+  <!-- ── Spinner ── -->
+  <div id="spinner"><div class="loader"></div><p style="color:var(--muted);font-size:.87rem">Running inference on HuggingFace…</p></div>
+
+  <!-- ── Error ── -->
+  <div id="error-box"></div>
+
+  <!-- ── Results ── -->
+  <div id="results"></div>
+</main>
+
+<script>
+  const API  = 'https://ayushks07-road-extraction-deepglobe.hf.space';
+  let file   = null;
+  let mode   = 'analyze';
+
+  // ── Tabs ─────────────────────────────────────────────────────────────────────
+  function switchTab(m) {
+    mode = m;
+    document.querySelectorAll('.tab').forEach((t,i) => {
+      t.classList.toggle('active', ['analyze','route','full'][i] === m);
+    });
+    renderControls();
+    document.getElementById('results').style.display  = 'none';
+    document.getElementById('error-box').style.display = 'none';
+  }
+
+  function renderControls() {
+    const c = document.getElementById('controls');
+    const vehicleSel = `
+      <div class="select-wrap">
+        <label for="selVehicle">Vehicle</label>
+        <select id="selVehicle">
+          <option value="car">🚗 Car</option>
+          <option value="truck">🚛 Truck</option>
+          <option value="motorcycle">🏍️ Motorcycle</option>
+          <option value="pedestrian">🚶 Pedestrian</option>
+        </select>
+      </div>`;
+    const imgToggle = `
+      <label class="toggle">
+        <input type="checkbox" id="chkImages" checked/>
+        <span>Return images</span>
+      </label>`;
+    const tier1Toggle = `
+      <label class="toggle">
+        <input type="checkbox" id="chkTier1" checked/>
+        <span>Run Tier 1</span>
+      </label>`;
+    const btn = `<button class="btn-run" id="btnRun" disabled onclick="runAnalysis()">⚡ Run</button>`;
+
+    if      (mode === 'analyze') c.innerHTML = tier1Toggle + imgToggle + btn;
+    else if (mode === 'route')   c.innerHTML = vehicleSel  + imgToggle + btn;
+    else                         c.innerHTML = vehicleSel  + imgToggle + btn;
+
+    document.getElementById('btnRun').disabled = !file;
+  }
+  renderControls();
+
+  // ── Drag & drop ───────────────────────────────────────────────────────────────
+  const zone = document.getElementById('dropZone');
+  zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag'); });
+  zone.addEventListener('dragleave', ()  => zone.classList.remove('drag'));
+  zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('drag'); setFile(e.dataTransfer.files[0]); });
+  document.getElementById('fileInput').addEventListener('change', e => setFile(e.target.files[0]));
+
+  function setFile(f) {
+    if (!f) return;
+    file = f;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      document.getElementById('preview').src = ev.target.result;
+      document.getElementById('preview-wrap').style.display = 'block';
+    };
+    reader.readAsDataURL(f);
+    document.getElementById('btnRun').disabled = false;
+    document.getElementById('results').style.display   = 'none';
+    document.getElementById('error-box').style.display = 'none';
+  }
+
+  // ── Run ───────────────────────────────────────────────────────────────────────
+  async function runAnalysis() {
+    if (!file) return;
+    const incImages = document.getElementById('chkImages')?.checked ?? true;
+    const runTier1  = document.getElementById('chkTier1')?.checked  ?? true;
+    const vehicle   = document.getElementById('selVehicle')?.value  ?? 'car';
+
+    document.getElementById('spinner').style.display  = 'block';
+    document.getElementById('results').style.display  = 'none';
+    document.getElementById('error-box').style.display = 'none';
+    document.getElementById('btnRun').disabled = true;
+
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+
+      let url;
+      if      (mode === 'analyze') url = `${API}/analyze?include_images=${incImages}&run_tier1=${runTier1}`;
+      else if (mode === 'route')   url = `${API}/route?vehicle=${vehicle}&include_images=${incImages}`;
+      else                         url = `${API}/full?vehicle=${vehicle}&include_images=${incImages}`;
+
+      const resp = await fetch(url, { method: 'POST', body: fd });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      const data = await resp.json();
+
+      if      (mode === 'analyze') renderAnalyze(data, incImages);
+      else if (mode === 'route')   renderRoute(data,   incImages);
+      else                         renderFull(data,     incImages);
+
+    } catch(err) {
+      const box = document.getElementById('error-box');
+      box.textContent = '❌ ' + err.message;
+      box.style.display = 'block';
+    } finally {
+      document.getElementById('spinner').style.display = 'none';
+      document.getElementById('btnRun').disabled = false;
+    }
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────────
+  function b64Img(b64, title) {
+    return `<div class="img-card">
+      <div class="img-title">${title}</div>
+      <img src="data:image/png;base64,${b64}" alt="${title}" loading="lazy"/>
+    </div>`;
+  }
+  function fullFig(b64, title) {
+    return `<div class="full-fig">
+      <div class="fig-title">${title}</div>
+      <img src="data:image/png;base64,${b64}" alt="${title}" loading="lazy"/>
+    </div>`;
+  }
+  function statCards(items) {
+    return items.map(i => `<div class="stat-card">
+      <div class="label">${i.label}</div>
+      <div class="value">${i.value}</div>
+      ${i.unit ? `<div class="unit">${i.unit}</div>` : ''}
+    </div>`).join('');
+  }
+  function section(title, inner) {
+    return `<div class="section"><div class="section-title">${title}</div>${inner}</div>`;
+  }
+
+  // Surface pills
+  function surfacePills(sc) {
+    if (!sc) return '';
+    return `<div class="pill-row">
+      <span class="pill paved">Paved: ${sc.paved||0}</span>
+      <span class="pill unpaved">Unpaved: ${sc.unpaved||0}</span>
+      <span class="pill damaged">Damaged ⚠: ${sc.damaged||0}</span>
+    </div>`;
+  }
+
+  // Landcover pills
+  const LC_CLASSES = ['urban','agriculture','rangeland','forest','water','barren','unknown'];
+  function lcPills(counts) {
+    if (!counts) return '';
+    return `<div class="pill-row">${LC_CLASSES.map(k =>
+      counts[k] !== undefined
+        ? `<span class="pill ${k==='unknown'?'generic':k}">${k}: ${counts[k].toLocaleString()}</span>`
+        : ''
+    ).join('')}</div>`;
+  }
+
+  // Render Tier 1 section
+  function renderTier1Block(t1, incImages) {
+    if (!t1 || t1.is_empty) return '';
+    let html = '';
+    html += `<div class="stats-grid">${statCards([
+      { label:'Mean width',   value:(t1.mean_width_m||0).toFixed(2),   unit:'m' },
+      { label:'Median width', value:(t1.median_width_m||0).toFixed(2), unit:'m' },
+      { label:'Skeleton px',  value:(t1.skeleton_pixels||0).toLocaleString() },
+      { label:'Surface',      value: t1.dominant_surface||'—' },
+    ])}</div>`;
+    html += surfacePills(t1.surface_counts);
+    if (incImages) {
+      const imgs = [];
+      if (t1.width_heatmap_b64)   imgs.push(b64Img(t1.width_heatmap_b64,   'Width Heatmap'));
+      if (t1.surface_overlay_b64) imgs.push(b64Img(t1.surface_overlay_b64, 'Surface Overlay'));
+      if (imgs.length) html += `<div class="img-grid">${imgs.join('')}</div>`;
+      if (t1.tier1_figure_b64)
+        html += fullFig(t1.tier1_figure_b64, '📊 Tier 1 Diagnostic Dashboard');
+    }
+    return html;
+  }
+
+  // Render Tier 2 section
+  function renderTier2Block(t2, incImages) {
+    if (!t2) return '';
+    const gs = t2.graph_summary || {};
+    console.log('graph_summary:', JSON.stringify(gs, null, 2));  // ← temporary debug — remove once confirmed
+    let html = `<div class="stats-grid">${statCards([
+      { label:'Nodes',           value: gs.n_nodes                  ?? '—' },
+      { label:'Edges',           value: gs.n_edges                  ?? '—' },
+      { label:'Components',      value: gs.n_components             ?? '—' },
+      { label:'Largest CC',      value: gs.largest_component_size   ?? '—', unit:'nodes' },
+      { label:'Endpoints',       value: gs.n_endpoints              ?? '—' },
+      { label:'Junctions',       value: gs.n_junctions              ?? '—' },
+      { label:'Mean width',      value: gs.mean_width_m !== undefined ? gs.mean_width_m.toFixed(2) : '—', unit:'m' },
+      { label:'Best vehicle',    value: t2.best_vehicle             ?? '—' },
+    ])}</div>`;
+
+    // Routes table
+    const byV = t2.routes_by_vehicle || {};
+    if (Object.keys(byV).length) {
+      const badges = ['best','v1','v2','v3'];
+      let rows = '';
+      Object.entries(byV).forEach(([veh, routes], vi) => {
+        if (!Array.isArray(routes) || !routes.length) return;
+        const r = routes[0];
+        rows += `<tr>
+          <td><span class="badge ${badges[vi]||'v1'}">${veh}</span></td>
+          <td>${r.total_distance_m !== undefined ? r.total_distance_m.toFixed(1) + ' m' : '—'}</td>
+          <td>${r.total_cost       !== undefined ? r.total_cost.toFixed(2)              : '—'}</td>
+          <td>${r.dominant_road_type || r.dominant_surface || '—'}</td>
+        </tr>`;
+      });
+      if (rows) html += `<table class="route-table">
+        <thead><tr><th>Vehicle</th><th>Distance</th><th>Cost</th><th>Road type</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    if (incImages && t2.route_viz_b64)
+      html += fullFig(t2.route_viz_b64, '🗺️ Route Visualisation (top-3 per vehicle)');
+
+    return html;
+  }
+
+  // ── Render: /analyze ─────────────────────────────────────────────────────────
+  function renderAnalyze(data, incImages) {
+    const road = data.road || {};
+    let html = '';
+
+    // Road
+    html += section('🛣️ Road Extraction', `
+      <div class="stats-grid">${statCards([
+        { label:'Road pixels',    value:(road.road_pixels||0).toLocaleString() },
+        { label:'Coverage',       value:(road.road_pct||0).toFixed(2), unit:'%' },
+      ])}</div>
+      <div class="img-grid">
+        ${incImages && road.prob_heatmap_b64 ? b64Img(road.prob_heatmap_b64,'Probability Heatmap') : ''}
+        ${incImages && road.mask_b64         ? b64Img(road.mask_b64,        'Binary Road Mask')    : ''}
+      </div>
+    `);
+
+    // Tier 1
+    const t1 = data.tier1;
+    if (t1 && !t1.is_empty)
+      html += section('📐 Tier 1 — Width & Surface', renderTier1Block(t1, incImages));
+
+    paint(html);
+  }
+
+  // ── Render: /route ───────────────────────────────────────────────────────────
+  function renderRoute(data, incImages) {
+    let html = '';
+
+    // Quick road stat
+    html += section('🛣️ Road', `
+      <div class="stats-grid">${statCards([
+        { label:'Road pixels', value:(data.road_pixels||0).toLocaleString() },
+      ])}</div>`);
+
+    // Tier 1 summary (compact — no images in route endpoint)
+    const t1s = data.tier1_summary || {};
+    if (Object.keys(t1s).length) {
+      html += section('📐 Tier 1 Summary', `
+        <div class="stats-grid">${statCards([
+          { label:'Mean width',   value:(t1s.mean_width_m||0).toFixed(2),   unit:'m' },
+          { label:'Median width', value:(t1s.median_width_m||0).toFixed(2), unit:'m' },
+          { label:'Surface',      value: t1s.dominant_surface||'—' },
+        ])}</div>
+        ${surfacePills(t1s.surface_counts)}`);
+    }
+
+    // Tier 2
+    html += section('🗺️ Tier 2 — Graph Routing', renderTier2Block(data.tier2, incImages));
+
+    paint(html);
+  }
+
+  // ── Render: /full ────────────────────────────────────────────────────────────
+  function renderFull(data, incImages) {
+    let html = '';
+
+    // Road
+    const road = data.road || {};
+    html += section('🛣️ Road Extraction', `
+      <div class="stats-grid">${statCards([
+        { label:'Road pixels', value:(road.road_pixels||0).toLocaleString() },
+        { label:'Coverage',    value:(road.road_pct||0).toFixed(2), unit:'%' },
+      ])}</div>
+      <div class="img-grid">
+        ${incImages && road.mask_b64 ? b64Img(road.mask_b64,'Binary Road Mask') : ''}
+      </div>`);
+
+    // Land cover
+    const lc = data.landcover || {};
+    if (Object.keys(lc).length) {
+      html += section('🌿 Land Cover Classification', `
+        ${lcPills(lc.pixel_counts)}
+        <div class="img-grid">
+          ${incImages && lc.map_b64 ? b64Img(lc.map_b64,'Land Cover Map') : ''}
+        </div>`);
+    }
+
+    // Building
+    const bld = data.building || {};
+    if (Object.keys(bld).length) {
+      html += section('🏢 Building Detection', `
+        <div class="stats-grid">${statCards([
+          { label:'Building pixels', value:(bld.building_pixels||0).toLocaleString() },
+          { label:'Coverage',        value:(bld.building_pct||0).toFixed(2), unit:'%' },
+        ])}</div>
+        <div class="img-grid">
+          ${incImages && bld.mask_b64 ? b64Img(bld.mask_b64,'Building Mask') : ''}
+        </div>`);
+    }
+
+    // Tier 1
+    const t1 = data.tier1;
+    if (t1 && !t1.is_empty)
+      html += section('📐 Tier 1 — Width & Surface', renderTier1Block(t1, incImages));
+
+    // Tier 2
+    if (data.tier2)
+      html += section('🗺️ Tier 2 — Graph Routing', renderTier2Block(data.tier2, incImages));
+
+    paint(html);
+  }
+
+  function paint(html) {
+    const r = document.getElementById('results');
+    r.innerHTML = html;
+    r.style.display = 'block';
+    r.scrollIntoView({ behavior:'smooth' });
+  }
+</script>
+</body>
+</html>
