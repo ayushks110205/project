@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import os
 import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -34,6 +35,16 @@ from sklearn.preprocessing import StandardScaler
 from skimage.feature import graycomatrix, graycoprops
 from skimage.filters import sobel
 from skimage.morphology import medial_axis
+
+try:
+    import joblib
+    _JOBLIB_OK = True
+except ImportError:
+    _JOBLIB_OK = False
+
+# Path to the pre-trained Random Forest bundle produced by train_surface_rf.py.
+# Override at runtime with the SURFACE_RF_PATH environment variable.
+RF_MODEL_PATH: str = os.getenv('SURFACE_RF_PATH', 'surface_rf.pkl')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -257,25 +268,66 @@ def _label_clusters(cluster_centers: np.ndarray,
 
 class RoadTypeClassifier:
     """
-    Unsupervised KMeans classifier for road surface type.
+    Road surface type classifier (paved / unpaved / damaged).
 
-    Workflow:
+    Preferred mode — Supervised Random Forest
+    -----------------------------------------
+    When ``surface_rf.pkl`` (or the path set by the ``SURFACE_RF_PATH``
+    environment variable) is present, the classifier loads the pre-trained
+    Random Forest produced by ``train_surface_rf.py`` and uses it directly.
+    This gives ~80-90% accuracy versus ~60-65% for the unsupervised KMeans.
+
+    Fallback mode — Unsupervised KMeans
+    ------------------------------------
+    When no RF bundle is found the original KMeans + heuristic labelling path
+    is used unchanged, so the module works out-of-the-box without any labels.
+
+    Workflow (RF mode)
+        1. ``__init__``  — attempts to load RF bundle; falls back to KMeans.
+        2. ``predict()`` — extracts features, calls ``rf.predict()`` directly.
+
+    Workflow (KMeans mode)
         1. ``fit()``     — optional; trains on a batch of (image, mask) pairs.
                            If skipped, ``predict()`` triggers a single-image fit.
-        2. ``predict()`` — extracts features for one image and returns per-pixel
-                           labels and a colour overlay.
+        2. ``predict()`` — extracts features, predicts cluster, maps via heuristic.
 
     Args:
         config : :class:`ClassifierConfig`.  Defaults to standard settings.
+        use_rf : If True (default), attempt to load the RF bundle first.
     """
 
-    def __init__(self, config: ClassifierConfig = None) -> None:
+    def __init__(self, config: ClassifierConfig = None, use_rf: bool = True) -> None:
         self.cfg    = config or ClassifierConfig()
         self._rng   = np.random.default_rng(self.cfg.random_state)
-        self._kmeans: Optional[KMeans]         = None
-        self._scaler: Optional[StandardScaler] = None
+        self._feature_index: Dict[str, int] = self._build_feature_index()
+
+        # ── Try to load supervised RF bundle ──────────────────────────────────
+        self._rf_bundle: Optional[dict] = None
+        if use_rf and _JOBLIB_OK and os.path.isfile(RF_MODEL_PATH):
+            try:
+                bundle = joblib.load(RF_MODEL_PATH)
+                # Validate bundle has required keys
+                if 'scaler' in bundle and 'rf' in bundle:
+                    self._rf_bundle = bundle
+                    cv_f1  = bundle.get('cv_f1',  '?')
+                    n_train = bundle.get('n_train', '?')
+                    print(f"✅  RF surface classifier loaded: '{RF_MODEL_PATH}' "
+                          f"(CV F1={cv_f1:.3f}, trained on {n_train} patches)")
+                else:
+                    print(f"⚠️  RF bundle at '{RF_MODEL_PATH}' is missing keys — "
+                          "falling back to KMeans")
+            except Exception as exc:
+                print(f"⚠️  Could not load RF bundle: {exc} — falling back to KMeans")
+
+        # ── KMeans state (used only when RF bundle is not available) ───────────
+        self._kmeans: Optional[KMeans]            = None
+        self._scaler: Optional[StandardScaler]    = None
         self._label_map: Optional[Dict[int, str]] = None
-        self._feature_index: Dict[str, int]    = self._build_feature_index()
+
+    @property
+    def using_rf(self) -> bool:
+        """True when the supervised Random Forest is active."""
+        return self._rf_bundle is not None
 
     # ── Feature index ─────────────────────────────────────────────────────────
 
@@ -409,8 +461,8 @@ class RoadTypeClassifier:
         """
         Classify road surface type for a single image.
 
-        If the classifier has not been fitted via :meth:`fit`, it is
-        automatically fitted on this single image first.
+        Uses the supervised Random Forest if available (loaded in ``__init__``);
+        otherwise falls back to the original KMeans + heuristic path.
 
         Args:
             image_rgb    : (H, W, 3) uint8 RGB satellite image.
@@ -422,12 +474,13 @@ class RoadTypeClassifier:
         Returns:
             dict with keys:
                 ``surface_map``    — (H, W) str object array, label per skeleton px.
-                ``confidence_map`` — (H, W) float32, KMeans cluster distance
-                                     normalised to [0, 1] (1 = most confident).
+                ``confidence_map`` — (H, W) float32, confidence in [0, 1]
+                                     (1 = most confident).
                 ``summary``        — dict with dominant type, type counts, etc.
                 ``overlay_rgb``    — (H, W, 3) uint8 colour overlay.
                 ``skeleton``       — (H, W) bool skeleton used.
                 ``is_empty``       — True if no road pixels found.
+                ``classifier``     — 'random_forest' or 'kmeans'
         """
         H, W = road_mask.shape[:2]
 
@@ -445,32 +498,23 @@ class RoadTypeClassifier:
         if feats.shape[0] == 0:
             return self._empty_predict_result(H, W, skeleton)
 
-        # Auto-fit on this single image if not fitted
-        if self._kmeans is None:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                self.fit([image_rgb], [road_mask])
+        # ── Branch: RF or KMeans ──────────────────────────────────────────────
+        if self._rf_bundle is not None:
+            pred_labels, confidence, clf_name = self._predict_rf(feats)
+        else:
+            pred_labels, confidence, clf_name = self._predict_kmeans(
+                feats, image_rgb, road_mask)
 
-        X_scaled = self._scaler.transform(feats)
-        cluster_ids = self._kmeans.predict(X_scaled)
-
-        # Distances to all cluster centres → confidence
-        dists = self._kmeans.transform(X_scaled)   # (M, k)
-        min_dists = dists[np.arange(len(dists)), cluster_ids]
-        # Invert & normalise: low distance → high confidence
-        max_dist = min_dists.max() if min_dists.max() > 0 else 1.0
-        confidence = (1.0 - min_dists / max_dist).astype(np.float32)
-
-        # Build output maps
+        # ── Build output maps ─────────────────────────────────────────────────
         surface_map    = np.full((H, W), '', dtype=object)
         confidence_map = np.zeros((H, W), dtype=np.float32)
         overlay_rgb    = np.zeros((H, W, 3), dtype=np.uint8)
 
-        for (r, c), cid, conf in zip(points, cluster_ids, confidence):
-            label = self._label_map[int(cid)]
+        for (r, c), label, conf in zip(points, pred_labels, confidence):
             surface_map[r, c]    = label
             confidence_map[r, c] = conf
-            overlay_rgb[r, c]    = _SURFACE_COLORS[label]
+            overlay_rgb[r, c]    = _SURFACE_COLORS.get(label,
+                                       np.array([128, 128, 128], dtype=np.uint8))
 
         # ── KDTree propagation: label ALL skeleton pixels ─────────────────────
         # The sampling loop above only labelled `points` (≤ n_samples).
@@ -489,10 +533,11 @@ class RoadTypeClassifier:
                 label = surface_map[src_r, src_c]
                 if label != '':
                     surface_map[r, c]    = label
-                    overlay_rgb[r, c]    = _SURFACE_COLORS[label]
+                    overlay_rgb[r, c]    = _SURFACE_COLORS.get(label,
+                                               np.array([128, 128, 128], dtype=np.uint8))
                     confidence_map[r, c] = confidence_map[src_r, src_c]
 
-        # Summary statistics
+        # ── Summary statistics ────────────────────────────────────────────────
         labels_on_skel = surface_map[skeleton]
         labels_on_skel = labels_on_skel[labels_on_skel != '']
         type_counts: Dict[str, int] = {t: 0 for t in SURFACE_TYPES}
@@ -500,13 +545,15 @@ class RoadTypeClassifier:
             if lbl in type_counts:
                 type_counts[lbl] += 1
 
-        dominant = max(type_counts, key=type_counts.get) if labels_on_skel.size > 0 else 'paved'
+        dominant = (max(type_counts, key=type_counts.get)
+                    if labels_on_skel.size > 0 else 'paved')
 
         summary = {
-            'dominant_type':  dominant,
-            'type_counts':    type_counts,
+            'dominant_type':   dominant,
+            'type_counts':     type_counts,
             'mean_confidence': float(confidence.mean()),
-            'n_sampled_pts':  int(len(points)),
+            'n_sampled_pts':   int(len(points)),
+            'classifier':      clf_name,
         }
 
         return {
@@ -516,7 +563,68 @@ class RoadTypeClassifier:
             'overlay_rgb':    overlay_rgb,
             'skeleton':       skeleton,
             'is_empty':       False,
+            'classifier':     clf_name,
         }
+
+    # ── Private prediction helpers ────────────────────────────────────────────
+
+    def _predict_rf(
+        self,
+        feats: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, str]:
+        """
+        Classify patches using the pre-trained Random Forest.
+
+        Returns
+        -------
+        pred_labels : (M,) array of str labels
+        confidence  : (M,) float32 array in [0, 1]  (max class probability)
+        clf_name    : 'random_forest'
+        """
+        scaler = self._rf_bundle['scaler']
+        rf     = self._rf_bundle['rf']
+
+        X_scaled    = scaler.transform(feats)
+        pred_labels = rf.predict(X_scaled)                     # (M,) str
+        proba       = rf.predict_proba(X_scaled)               # (M, n_classes)
+        confidence  = proba.max(axis=1).astype(np.float32)     # (M,)
+
+        return np.array(pred_labels), confidence, 'random_forest'
+
+    def _predict_kmeans(
+        self,
+        feats:     np.ndarray,
+        image_rgb: np.ndarray,
+        road_mask: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, str]:
+        """
+        Classify patches using the existing KMeans + heuristic path.
+        Auto-fits on this single image if the KMeans has not been fitted.
+
+        Returns
+        -------
+        pred_labels : (M,) array of str labels
+        confidence  : (M,) float32 array in [0, 1]
+        clf_name    : 'kmeans'
+        """
+        if self._kmeans is None:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                self.fit([image_rgb], [road_mask])
+
+        X_scaled    = self._scaler.transform(feats)
+        cluster_ids = self._kmeans.predict(X_scaled)
+
+        # Distances → confidence (low distance = high confidence)
+        dists     = self._kmeans.transform(X_scaled)           # (M, k)
+        min_dists = dists[np.arange(len(dists)), cluster_ids]
+        max_dist  = min_dists.max() if min_dists.max() > 0 else 1.0
+        confidence = (1.0 - min_dists / max_dist).astype(np.float32)
+
+        pred_labels = np.array(
+            [self._label_map[int(cid)] for cid in cluster_ids])
+
+        return pred_labels, confidence, 'kmeans'
 
     # ── Private helpers ────────────────────────────────────────────────────────
 

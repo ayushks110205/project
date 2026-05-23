@@ -191,6 +191,7 @@
   const API  = 'https://ayushks07-road-extraction-deepglobe.hf.space';
   let file   = null;
   let mode   = 'analyze';
+  let routePins = [];  // [{x,y}]  max 2; x/y are 0-1 fractions of preview image
 
   // ── Tabs ─────────────────────────────────────────────────────────────────────
   function switchTab(m) {
@@ -227,9 +228,16 @@
       </label>`;
     const btn = `<button class="btn-run" id="btnRun" disabled onclick="runAnalysis()">⚡ Run</button>`;
 
-    if      (mode === 'analyze') c.innerHTML = tier1Toggle + imgToggle + btn;
-    else if (mode === 'route')   c.innerHTML = vehicleSel  + imgToggle + btn;
-    else                         c.innerHTML = vehicleSel  + imgToggle + btn;
+    if (mode === 'analyze') {
+      c.innerHTML = tier1Toggle + imgToggle + btn;
+    } else if (mode === 'route') {
+      c.innerHTML = vehicleSel +
+        `<div class="pin-info" id="pinInfo">📍 Click the image to set <strong>Source</strong> (green) then <strong>Destination</strong> (red) — or leave blank for auto-routing</div>
+         <button class="btn-reset" id="btnReset" onclick="resetPins()" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:var(--muted);border-radius:8px;padding:.35rem .9rem;cursor:pointer;font-size:.82rem;">✕ Reset pins</button>` +
+        imgToggle + btn;
+    } else {
+      c.innerHTML = vehicleSel + imgToggle + btn;
+    }
 
     document.getElementById('btnRun').disabled = !file;
   }
@@ -245,16 +253,105 @@
   function setFile(f) {
     if (!f) return;
     file = f;
+    routePins = [];
     const reader = new FileReader();
     reader.onload = ev => {
-      document.getElementById('preview').src = ev.target.result;
+      const img = document.getElementById('preview');
+      img.src = ev.target.result;
       document.getElementById('preview-wrap').style.display = 'block';
+      img.onload = () => { if (mode === 'route') setupPinCanvas(); };
     };
     reader.readAsDataURL(f);
     document.getElementById('btnRun').disabled = false;
     document.getElementById('results').style.display   = 'none';
     document.getElementById('error-box').style.display = 'none';
   }
+
+  function setupPinCanvas() {
+    const wrap = document.getElementById('preview-wrap');
+    wrap.style.position = 'relative';
+    let cv = document.getElementById('pinCanvas');
+    if (!cv) {
+      cv = document.createElement('canvas');
+      cv.id = 'pinCanvas';
+      cv.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;cursor:crosshair;';
+      wrap.appendChild(cv);
+      cv.addEventListener('click', onImageClick);
+    }
+    cv.style.display = 'block';
+    drawPins();
+  }
+
+  // Returns the actual rendered pixel rect of the image inside the container,
+  // accounting for object-fit:contain (letterboxing / pillarboxing).
+  function getImageRenderedBounds() {
+    const img  = document.getElementById('preview');
+    const wrap = document.getElementById('preview-wrap');
+    const cw = wrap.offsetWidth,  ch = wrap.offsetHeight;
+    const iw = img.naturalWidth,  ih = img.naturalHeight;
+    if (!iw || !ih) return { left:0, top:0, width:cw, height:ch };
+    const scale = Math.min(cw / iw, ch / ih);
+    const rw = iw * scale,  rh = ih * scale;
+    return {
+      left:   (cw - rw) / 2,
+      top:    (ch - rh) / 2,
+      width:  rw,
+      height: rh,
+    };
+  }
+
+  function drawPins() {
+    const cv = document.getElementById('pinCanvas');
+    if (!cv) return;
+    const wrap = document.getElementById('preview-wrap');
+    cv.width  = wrap.offsetWidth;
+    cv.height = wrap.offsetHeight;
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, cv.width, cv.height);
+
+    // Shade the letterbox/pillarbox areas so users know where the image is
+    const b = getImageRenderedBounds();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(0, 0, cv.width, b.top);                          // top bar
+    ctx.fillRect(0, b.top + b.height, cv.width, cv.height);       // bottom bar
+    ctx.fillRect(0, b.top, b.left, b.height);                     // left bar
+    ctx.fillRect(b.left + b.width, b.top, cv.width, b.height);    // right bar
+
+    const colors = ['#22c55e', '#ef4444'];
+    const labels = ['S', 'D'];
+    routePins.forEach((p, i) => {
+      // p.x / p.y are fractions of the IMAGE area, not the container
+      const px = b.left + p.x * b.width;
+      const py = b.top  + p.y * b.height;
+      ctx.beginPath(); ctx.arc(px, py, 11, 0, Math.PI*2);
+      ctx.fillStyle = colors[i]; ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(labels[i], px, py);
+    });
+    const el = document.getElementById('pinInfo');
+    if (el) {
+      if (!routePins.length)         el.innerHTML = '📍 Click the image: set <strong>Source</strong> (green) then <strong>Destination</strong> (red)';
+      else if (routePins.length===1) el.innerHTML = '📍 Source set — click to set <strong>Destination</strong> (red)';
+      else                           el.innerHTML = '✅ Both pins set — hit <strong>⚡ Run</strong> (or ✕ Reset to redo)';
+    }
+  }
+
+  function onImageClick(e) {
+    if (mode !== 'route' || routePins.length >= 2) return;
+    const wrap = document.getElementById('preview-wrap');
+    const wr   = wrap.getBoundingClientRect();
+    const b    = getImageRenderedBounds();
+    // Click position relative to the image rect (not the container)
+    const x = (e.clientX - wr.left - b.left) / b.width;
+    const y = (e.clientY - wr.top  - b.top)  / b.height;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return;  // clicked in letterbox area
+    routePins.push({ x, y });
+    drawPins();
+  }
+
+  function resetPins() { routePins = []; drawPins(); }
 
   // ── Run ───────────────────────────────────────────────────────────────────────
   async function runAnalysis() {
@@ -273,9 +370,17 @@
       fd.append('file', file);
 
       let url;
-      if      (mode === 'analyze') url = `${API}/analyze?include_images=${incImages}&run_tier1=${runTier1}`;
-      else if (mode === 'route')   url = `${API}/route?vehicle=${vehicle}&include_images=${incImages}`;
-      else                         url = `${API}/full?vehicle=${vehicle}&include_images=${incImages}`;
+      if (mode === 'analyze') {
+        url = `${API}/analyze?include_images=${incImages}&run_tier1=${runTier1}`;
+      } else if (mode === 'route') {
+        url = `${API}/route?vehicle=${vehicle}&include_images=${incImages}`;
+        if (routePins.length === 2) {
+          const [s, d] = routePins;
+          url += `&src_x=${s.x.toFixed(4)}&src_y=${s.y.toFixed(4)}&dst_x=${d.x.toFixed(4)}&dst_y=${d.y.toFixed(4)}`;
+        }
+      } else {
+        url = `${API}/full?vehicle=${vehicle}&include_images=${incImages}`;
+      }
 
       const resp = await fetch(url, { method: 'POST', body: fd });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
@@ -366,7 +471,6 @@
   function renderTier2Block(t2, incImages) {
     if (!t2) return '';
     const gs = t2.graph_summary || {};
-    console.log('graph_summary:', JSON.stringify(gs, null, 2));  // ← temporary debug — remove once confirmed
     let html = `<div class="stats-grid">${statCards([
       { label:'Nodes',           value: gs.n_nodes                  ?? '—' },
       { label:'Edges',           value: gs.n_edges                  ?? '—' },
@@ -389,12 +493,13 @@
         rows += `<tr>
           <td><span class="badge ${badges[vi]||'v1'}">${veh}</span></td>
           <td>${r.total_distance_m !== undefined ? r.total_distance_m.toFixed(1) + ' m' : '—'}</td>
-          <td>${r.total_cost       !== undefined ? r.total_cost.toFixed(2)              : '—'}</td>
+          <td>${r.total_cost !== undefined && r.total_cost !== null ? r.total_cost.toFixed(1) : r.total_cost === null ? '∞' : '—'}</td>
+          <td>${r.mean_width_m !== undefined ? r.mean_width_m.toFixed(2) + ' m' : '—'}</td>
           <td>${r.dominant_road_type || r.dominant_surface || '—'}</td>
         </tr>`;
       });
       if (rows) html += `<table class="route-table">
-        <thead><tr><th>Vehicle</th><th>Distance</th><th>Cost</th><th>Road type</th></tr></thead>
+        <thead><tr><th>Vehicle</th><th>Distance</th><th>Cost</th><th>Width</th><th>Road type</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
     }

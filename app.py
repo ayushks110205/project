@@ -62,16 +62,31 @@ try:
     from road_graph import (
         RoadGraph, find_top3_routes, pick_src_dst_auto,
         draw_routes, VEHICLE_TYPES, get_graph_summary,
+        find_nearest_node,
     )
     _TIER2_OK = True
 except ImportError:
     pass
 
-# ── weight paths  (env-overridable; defaults match HuggingFace Spaces /app layout) ──
+def _resolve_weight(env_key: str, filename: str) -> str:
+    """
+    Resolve model weight path.
+    Priority:  env var  →  /app/<filename>  →  /app/Best path/<filename>
+    """
+    if env_key in os.environ:
+        return os.environ[env_key]
+    flat_path   = f'/app/{filename}'
+    nested_path = f'/app/Best path/{filename}'
+    if os.path.isfile(flat_path):
+        return flat_path
+    if os.path.isfile(nested_path):
+        return nested_path
+    return flat_path  # return anyway — lifespan will log the missing-file error
+
 _W = {
-    'road':      os.getenv('ROAD_WEIGHTS',      '/app/road_model_best.pth'),
-    'landcover': os.getenv('LANDCOVER_WEIGHTS', '/app/landcover_best.pth'),
-    'building':  os.getenv('BUILDING_WEIGHTS',  '/app/building_model_best.pth'),
+    'road':      _resolve_weight('ROAD_WEIGHTS',      'road_model_best.pth'),
+    'landcover': _resolve_weight('LANDCOVER_WEIGHTS', 'landcover_best.pth'),
+    'building':  _resolve_weight('BUILDING_WEIGHTS',  'building_model_best.pth'),
 }
 RESULTS_DIR = os.getenv('RESULTS_DIR', '/tmp/results')
 
@@ -224,38 +239,83 @@ async def _read_upload(file: UploadFile) -> tuple[np.ndarray, np.ndarray, str]:
 
 def _road_predict(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    Run Stage 1 road model, then subtract Stage 4 building footprints
-    to remove false positives caused by building roof textures.
-    Returns (road_mask uint8 0/255, prob float32 0-1) both (H,W).
-    """
-    from scipy.ndimage import binary_dilation
+    Run Stage 1 road model with three post-processing improvements:
 
-    model  = _require_model('road')
-    tensor = val_transform(image=rgb)['image'].unsqueeze(0).to(_device)
-    with torch.no_grad():
-        prob = torch.sigmoid(model(tensor)).squeeze().cpu().numpy()
-    mask = (prob > 0.5).astype(np.uint8) * 255
+    1. TTA (Test Time Augmentation) — 4 geometric variants averaged:
+       original, horizontal flip, vertical flip, 90° rotation.
+       Typically adds +1–2 IoU without any retraining.
+
+    2. Adaptive threshold — instead of a fixed 0.5, the threshold
+       scales with the scene's mean probability so low-contrast arid
+       images recover thin roads that would otherwise fall below 0.5.
+       Floor is 0.35 to prevent over-detection.
+
+    3. Morphological closing — applied before AND after building
+       subtraction to bridge gaps caused by skeletonization artefacts
+       and the building-mask subtraction itself.
+
+    Returns (road_mask uint8 0/255, prob float32 0-1) both (H, W).
+    """
+    from scipy.ndimage import binary_dilation, binary_closing
+
+    model = _require_model('road')
+
+    # ── 1. TTA: run 4 geometric variants, average the prob maps ──────────────
+    def _infer(img_np: np.ndarray) -> np.ndarray:
+        t = val_transform(image=img_np)['image'].unsqueeze(0).to(_device)
+        with torch.no_grad():
+            return torch.sigmoid(model(t)).squeeze().cpu().numpy()  # (H, W)
+
+    prob_orig  = _infer(rgb)
+    prob_hflip = np.fliplr(_infer(np.fliplr(rgb)))
+    prob_vflip = np.flipud(_infer(np.flipud(rgb)))
+    prob_rot90 = np.rot90(_infer(np.rot90(rgb, k=1)), k=-1)   # rotate → infer → un-rotate
+
+    prob: np.ndarray = (prob_orig + prob_hflip + prob_vflip + prob_rot90) / 4.0
+    print(f"🔄  TTA: mean prob={prob.mean():.4f}  max={prob.max():.4f}")
+
+    # ── 2. Adaptive threshold ─────────────────────────────────────────────────
+    # Scale threshold with scene mean so low-contrast arid scenes recover
+    # thin roads. Floor at 0.35 prevents over-detection, ceiling at 0.50
+    # keeps high-confidence predictions unchanged.
+    scene_mean = float(prob.mean())
+    thresh = float(np.clip(scene_mean * 0.80, 0.35, 0.50))
+    mask   = (prob > thresh).astype(np.uint8) * 255
+    print(f"🎯  Adaptive threshold: {thresh:.3f}  "
+          f"(scene_mean={scene_mean:.4f})  "
+          f"road_px={int((mask > 0).sum())}")
+
+    # ── 3. Morphological closing (pre-subtraction) ────────────────────────────
+    # Bridges tiny gaps in the detected network before building subtraction
+    # so the skeleton tracer sees a more continuous mask.
+    closed = binary_closing(mask > 0, iterations=2)
+    mask   = closed.astype(np.uint8) * 255
+    print(f"🔲  Closing (pre):  road_px after={int((mask > 0).sum())}")
 
     # ── Building mask subtraction ─────────────────────────────────────────────
-    # Only runs if the building model is loaded; gracefully skips if not.
-    # Building model outputs 640×640; road mask is 512×512 — resize first.
-    # INTER_NEAREST preserves hard binary edges (no blurred intermediate values).
     if 'building' in _models:
-        building_mask = _building_predict(rgb)              # (640,640) 0/255
-        road_h, road_w = mask.shape                         # always 512×512
+        building_mask = _building_predict(rgb)               # (640, 640) 0/255
+        road_h, road_w = mask.shape                          # 512 × 512
         building_mask_resized = cv2.resize(
             building_mask,
             (road_w, road_h),
             interpolation=cv2.INTER_NEAREST,
-        )                                                    # now (512,512)
+        )
         building_binary  = (building_mask_resized > 0)
-        building_dilated = binary_dilation(building_binary, iterations=1)   # was 3 — reduced to avoid eating road pixels along compound walls
+        building_dilated = binary_dilation(building_binary, iterations=1)
         mask[building_dilated] = 0
         prob[building_dilated] = 0.0
         n_removed = int(building_dilated.sum())
-        print(f"🏢  Building subtraction: {n_removed} road pixels removed")
+        print(f"🏢  Building subtraction: {n_removed} px removed")
+
+        # ── 3b. Morphological closing (post-subtraction) ──────────────────────
+        # Re-bridge gaps that the building mask cut through.
+        closed = binary_closing(mask > 0, iterations=2)
+        mask   = closed.astype(np.uint8) * 255
+        print(f"🔲  Closing (post): road_px after={int((mask > 0).sum())}")
 
     return mask, prob
+
 
 
 def _landcover_predict(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -288,6 +348,21 @@ def _run_tier1(rgb: np.ndarray, road_mask: np.ndarray,
     """Run Tier 1 modules; returns summary dict + optional base64 images."""
     if not _TIER1_OK:
         return {'error': 'Tier 1 modules not installed.'}
+
+    # ── Resize RGB to match road_mask coordinate space (512×512) ─────────────
+    # road_mask is always 512×512 (model output resolution).  All Tier 1
+    # overlays (width heatmap, surface overlay, tier1 figure) draw on top of
+    # road pixels — using the original full-res rgb causes annotations to
+    # appear only in the top-left quadrant of the image.
+    mask_h, mask_w = road_mask.shape[:2]
+    rgb_h,  rgb_w  = rgb.shape[:2]
+    if rgb_h != mask_h or rgb_w != mask_w:
+        rgb = cv2.resize(
+            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
+            (mask_w, mask_h),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
 
     wr  = RoadWidthEstimator()
     wres = wr.analyse(road_mask)
@@ -325,7 +400,8 @@ def _run_tier1(rgb: np.ndarray, road_mask: np.ndarray,
 
 
 def _run_tier2(rgb: np.ndarray, tier1_result: dict,
-               vehicle: str, stem: str, include_images: bool) -> dict:
+               vehicle: str, stem: str, include_images: bool,
+               src_rc=None, dst_rc=None) -> dict:
     """Run Tier 2 graph routing; returns summary + optional route viz."""
     if not _TIER2_OK:
         return {'error': 'Tier 2 (networkx) not installed.'}
@@ -339,7 +415,18 @@ def _run_tier2(rgb: np.ndarray, tier1_result: dict,
         n_urban_corrected = rg.n_urban_corrected,
     )
 
-    src, dst = pick_src_dst_auto(G)
+    # ── Src / Dst resolution ─────────────────────────────────────────────────
+    # If the caller provides pixel coordinates (in the original image space),
+    # snap to the nearest graph node.  Otherwise fall back to auto-pick.
+    if src_rc is not None and dst_rc is not None:
+        s_r, s_c = src_rc
+        d_r, d_c = dst_rc
+        src = find_nearest_node(G, s_r, s_c)
+        dst = find_nearest_node(G, d_r, d_c)
+        print(f"📍 User src=({s_r},{s_c})→node {src}  dst=({d_r},{d_c})→node {dst}")
+    else:
+        src, dst = pick_src_dst_auto(G)
+
     routes_by_vehicle: dict = {}
     for vtype in VEHICLE_TYPES:
         routes_by_vehicle[vtype] = (
@@ -350,12 +437,28 @@ def _run_tier2(rgb: np.ndarray, tier1_result: dict,
     # Best vehicle fallback
     order = [vehicle, 'car', 'motorcycle', 'pedestrian', 'truck']
     best  = next((v for v in order if routes_by_vehicle.get(v)), 'pedestrian')
-    route_viz_rgb = draw_routes(rgb, G, routes_by_vehicle.get(best, []))
+
+    # ── CRITICAL: graph node (row, col) are in 512×512 space (model output). ──
+    # Drawing them on the original rgb (e.g. 1024×1024) places every route in
+    # the top-left quadrant.  Resize to 512×512 so pixel coordinates align.
+    h, w = rgb.shape[:2]
+    if h != 512 or w != 512:
+        viz_rgb = cv2.resize(
+            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), (512, 512),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        viz_rgb = cv2.cvtColor(viz_rgb, cv2.COLOR_BGR2RGB)
+    else:
+        viz_rgb = rgb
+
+    route_viz_rgb = draw_routes(viz_rgb, G, routes_by_vehicle.get(best, []))
 
     def _route_dict(r):
+        cost = r.total_cost
         return {
             'rank':               r.rank,
             'total_distance_m':   round(r.total_distance_m, 2),
+            'total_cost':         round(cost, 2) if cost != float('inf') else None,
             'mean_width_m':       round(r.mean_width_m, 2),
             'dominant_surface':   r.dominant_surface,
             'dominant_road_type': r.dominant_road_type,
@@ -465,6 +568,10 @@ async def route(
     vehicle:        str  = Query('car', enum=['pedestrian','motorcycle','car','truck'],
                                  description='Preferred vehicle type'),
     include_images: bool = Query(True,  description='Include route visualisation'),
+    src_x: Optional[float] = Query(None, description='Source X as fraction of image width (0-1)'),
+    src_y: Optional[float] = Query(None, description='Source Y as fraction of image height (0-1)'),
+    dst_x: Optional[float] = Query(None, description='Destination X as fraction of image width (0-1)'),
+    dst_y: Optional[float] = Query(None, description='Destination Y as fraction of image height (0-1)'),
 ):
     """
     **Road extraction + Tier 1 + Tier 2 vehicle-aware graph routing.**
@@ -487,7 +594,15 @@ async def route(
             'type_result':  t1['type_result'],
         }
 
-        t2 = _run_tier2(rgb, tier1_result, vehicle, stem, include_images)
+        # Map fractional display coords → 512×512 model pixel coords
+        src_rc = None
+        dst_rc = None
+        if src_x is not None and src_y is not None and dst_x is not None and dst_y is not None:
+            src_rc = (int(src_y * 512), int(src_x * 512))
+            dst_rc = (int(dst_y * 512), int(dst_x * 512))
+
+        t2 = _run_tier2(rgb, tier1_result, vehicle, stem, include_images,
+                        src_rc=src_rc, dst_rc=dst_rc)
 
         response = {
             'filename': file.filename,
