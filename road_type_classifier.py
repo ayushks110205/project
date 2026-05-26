@@ -311,13 +311,13 @@ class RoadTypeClassifier:
                     self._rf_bundle = bundle
                     cv_f1  = bundle.get('cv_f1',  '?')
                     n_train = bundle.get('n_train', '?')
-                    print(f"✅  RF surface classifier loaded: '{RF_MODEL_PATH}' "
+                    print(f"[OK] RF surface classifier loaded: '{RF_MODEL_PATH}' "
                           f"(CV F1={cv_f1:.3f}, trained on {n_train} patches)")
                 else:
-                    print(f"⚠️  RF bundle at '{RF_MODEL_PATH}' is missing keys — "
+                    print(f"[WARN] RF bundle at '{RF_MODEL_PATH}' is missing keys -- "
                           "falling back to KMeans")
             except Exception as exc:
-                print(f"⚠️  Could not load RF bundle: {exc} — falling back to KMeans")
+                print(f"[WARN] Could not load RF bundle: {exc} -- falling back to KMeans")
 
         # ── KMeans state (used only when RF bundle is not available) ───────────
         self._kmeans: Optional[KMeans]            = None
