@@ -36,7 +36,7 @@ import numpy as np
 import torch
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from PIL import Image
@@ -199,12 +199,8 @@ app.add_middleware(_MaxUploadSize)
 # ── 3. Root endpoint  (HuggingFace Spaces health check hits / not /health) ────
 @app.get('/', tags=['System'])
 def root():
-    """API root — used by HuggingFace Spaces liveness probe."""
-    return {
-        'message': 'DeepGlobe Satellite Road Intelligence API',
-        'docs':    '/docs',
-        'health':  '/health',
-    }
+    """API root — serves the viewer.html frontend."""
+    return FileResponse('viewer.html')
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

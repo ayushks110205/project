@@ -26,7 +26,7 @@
 #   result = pipe.run(image_path, hole_mask_path=None)
 #
 # Or from CLI:
-#   python pipeline.py --image sat.jpg --s1 stage1.pth --s2 stage2.pth
+#   python pipeline.py --image sat.jpg --s1 stage1.pth --s2 stage2.pth (the pth file is necessary for more active and accurate inference)
 # =============================================================================
 
 import os
