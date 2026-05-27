@@ -92,16 +92,29 @@ class SentinelConnector:
 
         # Initialise GEE
         try:
-            if self._project_id:
-                ee.Initialize(project=self._project_id)
+            ee_json_str = os.getenv('EE_SERVICE_ACCOUNT_JSON')
+            if ee_json_str:
+                import json
+                from google.oauth2 import service_account
+                
+                info = json.loads(ee_json_str)
+                creds = service_account.Credentials.from_service_account_info(info)
+                # GEE requires the 'https://www.googleapis.com/auth/earthengine' scope
+                scoped_creds = creds.with_scopes(['https://www.googleapis.com/auth/earthengine'])
+                project_id = self._project_id or info.get('project_id')
+                ee.Initialize(credentials=scoped_creds, project=project_id)
+                print(f"[OK] GEE initialised via EE_SERVICE_ACCOUNT_JSON (project={project_id})")
             else:
-                ee.Initialize()
-            print(f"[OK] Google Earth Engine initialised"
-                  + (f" (project={self._project_id})" if self._project_id else ""))
+                if self._project_id:
+                    ee.Initialize(project=self._project_id)
+                else:
+                    ee.Initialize()
+                print(f"[OK] Google Earth Engine initialised locally"
+                      + (f" (project={self._project_id})" if self._project_id else ""))
         except Exception as exc:
             raise RuntimeError(
                 f"GEE initialisation failed: {exc}\n"
-                "Run:  earthengine authenticate"
+                "Provide 'EE_SERVICE_ACCOUNT_JSON' as an environment variable."
             ) from exc
 
     # ── Public API ─────────────────────────────────────────────────────────────
