@@ -53,3 +53,8 @@ python-multipart>=0.0.9           # required by FastAPI for UploadFile support
 
 # ── Cloud Integration ─────────────────────────────────────────────────────────
 huggingface-hub>=0.20.0           # auto-downloads weights from HF models repo
+
+# ── Live Analysis ─────────────────────────────────────────────────────────────
+osmnx>=1.9.1                      # OpenStreetMap vector routing & graphs
+earthengine-api>=0.1.390          # Google Earth Engine for Sentinel-2
+requests>=2.28.0                  # required for Earth Engine auth/fetching
