@@ -109,6 +109,7 @@ _W = {
     'road':      _resolve_weight('ROAD_WEIGHTS',      'road_model_best.pth'),
     'landcover': _resolve_weight('LANDCOVER_WEIGHTS', 'landcover_best.pth'),
     'building':  _resolve_weight('BUILDING_WEIGHTS',  'building_model_best.pth'),
+    'surface_rf': _resolve_weight('SURFACE_RF_PATH',  'surface_rf.pkl'),
 }
 RESULTS_DIR = os.getenv('RESULTS_DIR', '/tmp/results')
 
@@ -158,6 +159,14 @@ async def lifespan(app: FastAPI):
                 print(f"❌  {name} failed: {exc}")
         else:
             print(f"⚠️   {name} weights not found at {path}  (endpoint disabled)")
+
+    # ── Load Random Forest surface classifier ────────────────────────────────
+    rf_path = _W.get('surface_rf', '')
+    if rf_path and os.path.exists(rf_path):
+        os.environ['SURFACE_RF_PATH'] = rf_path
+        print(f"✅  surface_rf classifier loaded  ←  {rf_path}")
+    else:
+        print(f"⚠️   surface_rf.pkl not found — surface classifier falls back to KMeans")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     yield
