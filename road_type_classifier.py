@@ -497,7 +497,7 @@ class RoadTypeClassifier:
         if image_rgb.mean() < 5:
             points = np.argwhere(skeleton)
             pred_labels = ['unpaved'] * len(points)
-            confidence = [1.0] * len(points)
+            confidence = np.ones(len(points), dtype=np.float32)
             clf_name = 'default_unpaved (no satellite data)'
         else:
             feats, points = self._build_feature_matrix(image_rgb, skeleton)
