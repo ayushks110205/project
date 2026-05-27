@@ -68,6 +68,20 @@ try:
 except ImportError:
     pass
 
+# Sentinel-2 / GEE
+_GEE_OK = False
+try:
+    from sentinel_connector import SentinelConnector, _GEE_OK
+except ImportError:
+    pass
+
+# OSM road network
+_OSM_OK = False
+try:
+    from osm_connector import OSMConnector, compute_rgb_change, _OSM_OK
+except ImportError:
+    pass
+
 def _resolve_weight(env_key: str, filename: str) -> str:
     """
     Resolve model weight path.
@@ -485,11 +499,59 @@ def _run_tier2(rgb: np.ndarray, tier1_result: dict,
 # ══════════════════════════════════════════════════════════════════════════════
 
 class HealthResponse(BaseModel):
-    status:       str
-    device:       str
-    models_loaded: List[str]
+    status:          str
+    device:          str
+    models_loaded:   List[str]
     tier1_available: bool
     tier2_available: bool
+    gee_available:   bool
+    osm_available:   bool
+
+
+class SentinelRequest(BaseModel):
+    """Request body for POST /sentinel."""
+    lat_min:        float
+    lat_max:        float
+    lon_min:        float
+    lon_max:        float
+    start_date:     str           = '2024-01-01'
+    end_date:       str           = '2024-03-31'
+    vehicle:        str           = 'car'
+    include_images: bool          = True
+    cloud_pct:      float         = 20.0
+    project_id:     Optional[str] = None
+
+
+class LiveRequest(BaseModel):
+    """Request body for POST /live — OSM roads + Sentinel-2 land cover."""
+    lat_min:        float
+    lat_max:        float
+    lon_min:        float
+    lon_max:        float
+    start_date:     str           = '2024-01-01'
+    end_date:       str           = '2024-03-31'
+    vehicle:        str           = 'car'
+    include_images: bool          = True
+    cloud_pct:      float         = 20.0
+    project_id:     Optional[str] = None
+    road_types:     Optional[List[str]] = None
+
+
+class LiveChangeRequest(BaseModel):
+    """Request body for POST /live/change — temporal change detection."""
+    lat_min:        float
+    lat_max:        float
+    lon_min:        float
+    lon_max:        float
+    before_start:   str           = '2022-01-01'
+    before_end:     str           = '2022-06-30'
+    after_start:    str           = '2024-01-01'
+    after_end:      str           = '2024-06-30'
+    include_images: bool          = True
+    cloud_pct:      float         = 20.0
+    project_id:     Optional[str] = None
+    change_threshold: float       = 0.10
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -505,6 +567,8 @@ def health():
         models_loaded   = list(_models.keys()),
         tier1_available = _TIER1_OK,
         tier2_available = _TIER2_OK,
+        gee_available   = _GEE_OK,
+        osm_available   = _OSM_OK,
     )
 
 
@@ -708,5 +772,412 @@ async def full_pipeline(
 
     except HTTPException:
         raise
+    except Exception:
+        raise HTTPException(500, traceback.format_exc())
+
+
+# =============================================================================
+# Sentinel-2 Live Endpoint
+# =============================================================================
+
+@app.post('/sentinel', tags=['Sentinel-2'])
+async def sentinel_analyze(req: SentinelRequest):
+    """
+    **Fetch live Sentinel-2 imagery from Google Earth Engine and run the full pipeline.**
+
+    Provide a lat/lon bounding box + date range. The server will:
+    1. Query the GEE Sentinel-2 SR Harmonized collection
+    2. Cloud-filter and take a median composite
+    3. Download the RGB thumbnail (upsampled to 512x512)
+    4. Run road extraction + Tier 1 (width & surface) + Tier 2 (routing)
+    5. Return the same JSON schema as /full, plus `sentinel_metadata`
+
+    **One-time setup required on the server:**
+    ```
+    pip install earthengine-api requests
+    earthengine authenticate
+    ```
+    """
+    if not _GEE_OK:
+        raise HTTPException(
+            status_code = 503,
+            detail      = (
+                "Google Earth Engine not available. "
+                "Install with: pip install earthengine-api requests  "
+                "then run: earthengine authenticate"
+            )
+        )
+
+    if 'road' not in _models:
+        raise HTTPException(503, "Road model not loaded.")
+
+    # Validate vehicle
+    valid_vehicles = ['pedestrian', 'motorcycle', 'car', 'truck']
+    if req.vehicle not in valid_vehicles:
+        raise HTTPException(422, f"vehicle must be one of {valid_vehicles}")
+
+    try:
+        # ── 1. Fetch from GEE ─────────────────────────────────────────────────
+        bbox = [req.lon_min, req.lat_min, req.lon_max, req.lat_max]
+        conn = SentinelConnector(project_id=req.project_id)
+        rgb, sentinel_meta = conn.fetch(
+            bbox       = bbox,
+            start_date = req.start_date,
+            end_date   = req.end_date,
+            cloud_pct  = req.cloud_pct,
+        )
+
+        stem = (f"sentinel_{req.lat_min:.3f}_{req.lon_min:.3f}_"
+                f"{req.start_date}_{req.end_date}").replace('-', '')
+
+        # ── 2. Road extraction (Sentinel-aware) ──────────────────────────────
+        # NOTE: Our model was trained on 0.5m/pixel DeepGlobe imagery.
+        # Sentinel-2 is 10m/pixel (20x lower res). The model outputs ~0.5
+        # everywhere (maximum uncertainty). We use a high threshold (0.65)
+        # to return only the very highest-confidence detections, avoiding
+        # false positives. Major highways may still be partially visible.
+        road_mask, road_prob = _road_predict(rgb)
+        # Override with a strict Sentinel threshold
+        road_mask = (road_prob > 0.65).astype(np.uint8) * 255
+
+        response: dict = {
+            'source':            'sentinel-2',
+            'sentinel_metadata': sentinel_meta,
+            'road_model_warning': (
+                'Road model trained on 0.5m/pixel data; Sentinel-2 is 10m/pixel. '
+                'Only very high-confidence detections shown (threshold=0.65). '
+                'Land cover classification is the primary use case for Sentinel-2.'
+            ),
+            'image_shape':      list(rgb.shape[:2]),
+            'road': {
+                'road_pixels': int((road_mask > 0).sum()),
+                'road_pct':    round(float((road_mask > 0).mean()) * 100, 2),
+            },
+        }
+
+        if req.include_images:
+            response['road']['mask_b64'] = _img_to_b64(road_mask)
+            # Save the raw Sentinel RGB so the user can see what was fetched
+            sentinel_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            response['sentinel_rgb_b64'] = _img_to_b64(sentinel_bgr)
+
+        # ── 3. Land cover ─────────────────────────────────────────────────────
+        if 'landcover' in _models:
+            lc_map, ids = _landcover_predict(rgb)
+            class_names = ['urban', 'agriculture', 'rangeland',
+                           'forest', 'water', 'barren', 'unknown']
+            counts = {class_names[i]: int((ids == i).sum()) for i in range(7)}
+            response['landcover'] = {'pixel_counts': counts}
+            if req.include_images:
+                response['landcover']['map_b64'] = _img_to_b64(
+                    cv2.cvtColor(lc_map, cv2.COLOR_RGB2BGR))
+
+        # ── 4. Building ───────────────────────────────────────────────────────
+        if 'building' in _models:
+            bld_mask = _building_predict(rgb)
+            response['building'] = {
+                'building_pixels': int((bld_mask > 0).sum()),
+                'building_pct':    round(float((bld_mask > 0).mean()) * 100, 2),
+            }
+            if req.include_images:
+                response['building']['mask_b64'] = _img_to_b64(bld_mask)
+
+        # ── 5. Tier 1 ─────────────────────────────────────────────────────────
+        t1 = None
+        if _TIER1_OK:
+            t1 = _run_tier1(rgb, road_mask, stem, req.include_images)
+            response['tier1'] = t1.get('summary', {})
+            if req.include_images:
+                for k in ('width_heatmap_b64', 'surface_overlay_b64', 'tier1_figure_b64'):
+                    if k in t1:
+                        response['tier1'][k] = t1[k]
+
+        # ── 6. Tier 2 ─────────────────────────────────────────────────────────
+        if t1 and _TIER2_OK:
+            tier1_result = {
+                'width_result': t1['width_result'],
+                'type_result':  t1['type_result'],
+            }
+            t2 = _run_tier2(rgb, tier1_result, req.vehicle, stem,
+                            req.include_images)
+            response['tier2'] = {
+                'graph_summary':     t2['graph_summary'],
+                'best_vehicle':      t2['best_vehicle'],
+                'routes_by_vehicle': t2['routes_by_vehicle'],
+            }
+            if req.include_images and 'route_viz_b64' in t2:
+                response['tier2']['route_viz_b64'] = t2['route_viz_b64']
+
+        return JSONResponse(response)
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    except Exception:
+        raise HTTPException(500, traceback.format_exc())
+
+
+# =============================================================================
+# Live Road Analysis  —  OSM + Sentinel-2
+# =============================================================================
+
+@app.post('/live', tags=['Live Analysis'])
+async def live_analyze(req: LiveRequest):
+    """
+    **Fetch live road network from OSM + land cover from Sentinel-2 and run the full pipeline.**
+
+    - Road mask comes from OpenStreetMap (no image needed, no resolution limit)
+    - Land cover comes from Sentinel-2 via Google Earth Engine (optional)
+    - Surface classification, width measurement, and routing all run unchanged
+    - Works for any location on Earth
+
+    **Requirements:**
+    - `pip install osmnx`  (always needed)
+    - `pip install earthengine-api && earthengine authenticate`  (for land cover only)
+    """
+    if not _OSM_OK:
+        raise HTTPException(503,
+            "osmnx not installed. Run: pip install osmnx")
+    if 'road' not in _models:
+        raise HTTPException(503, "Road model not loaded.")
+
+    valid_vehicles = ['pedestrian', 'motorcycle', 'car', 'truck']
+    if req.vehicle not in valid_vehicles:
+        raise HTTPException(422, f"vehicle must be one of {valid_vehicles}")
+
+    try:
+        # ── 1. OSM road mask ──────────────────────────────────────────────────
+        osm = OSMConnector()
+        osm_result = osm.fetch(
+            lat_min    = req.lat_min,
+            lon_min    = req.lon_min,
+            lat_max    = req.lat_max,
+            lon_max    = req.lon_max,
+            road_types = req.road_types,
+        )
+        road_mask = osm_result['mask']   # (512,512) uint8 — ready for pipeline
+
+        stem = (f"live_{req.lat_min:.3f}_{req.lon_min:.3f}").replace('.', 'd')
+
+        response: dict = {
+            'source':      'osm+sentinel-2',
+            'osm_metadata': {
+                'total_roads':    osm_result['total_roads'],
+                'total_length_m': osm_result['total_length_m'],
+                'highway_counts': osm_result['highway_counts'],
+                'surface_counts': osm_result['surface_counts'],
+                'n_nodes':        osm_result['n_nodes'],
+                'n_edges':        osm_result['n_edges'],
+            },
+            'road': {
+                'road_pixels': int((road_mask > 0).sum()),
+                'road_pct':    round(float((road_mask > 0).mean()) * 100, 2),
+            },
+        }
+
+        if req.include_images:
+            response['road']['mask_b64'] = _img_to_b64(road_mask)
+
+        # ── 2. Sentinel-2 RGB + land cover (optional) ─────────────────────────
+        rgb = np.zeros((512, 512, 3), dtype=np.uint8)   # fallback grey canvas
+        if _GEE_OK:
+            try:
+                bbox = [req.lon_min, req.lat_min, req.lon_max, req.lat_max]
+                conn = SentinelConnector(project_id=req.project_id)
+                rgb, sentinel_meta = conn.fetch(
+                    bbox       = bbox,
+                    start_date = req.start_date,
+                    end_date   = req.end_date,
+                    cloud_pct  = req.cloud_pct,
+                )
+                response['sentinel_metadata'] = sentinel_meta
+                if req.include_images:
+                    response['sentinel_rgb_b64'] = _img_to_b64(
+                        cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+            except Exception as gee_err:
+                response['sentinel_warning'] = (
+                    f"Sentinel-2 fetch skipped: {gee_err}. "
+                    "Road analysis continues with OSM only."
+                )
+        else:
+            response['sentinel_warning'] = (
+                "GEE not available — land cover skipped. "
+                "Run: pip install earthengine-api && earthengine authenticate"
+            )
+
+        # Land cover on Sentinel-2 RGB
+        if 'landcover' in _models and rgb.mean() > 1:
+            lc_map, ids = _landcover_predict(rgb)
+            class_names = ['urban', 'agriculture', 'rangeland',
+                           'forest', 'water', 'barren', 'unknown']
+            counts = {class_names[i]: int((ids == i).sum()) for i in range(7)}
+            response['landcover'] = {'pixel_counts': counts}
+            if req.include_images:
+                response['landcover']['map_b64'] = _img_to_b64(
+                    cv2.cvtColor(lc_map, cv2.COLOR_RGB2BGR))
+
+        # ── 3. Tier 1 — width + surface on OSM mask ───────────────────────────
+        t1 = None
+        if _TIER1_OK:
+            t1 = _run_tier1(rgb, road_mask, stem, req.include_images)
+            response['tier1'] = t1.get('summary', {})
+            if req.include_images:
+                for k in ('width_heatmap_b64', 'surface_overlay_b64',
+                          'tier1_figure_b64'):
+                    if k in t1:
+                        response['tier1'][k] = t1[k]
+
+        # ── 4. Tier 2 — graph + routing on OSM mask ───────────────────────────
+        if t1 and _TIER2_OK:
+            tier1_result = {
+                'width_result': t1['width_result'],
+                'type_result':  t1['type_result'],
+            }
+            t2 = _run_tier2(rgb, tier1_result, req.vehicle, stem,
+                            req.include_images)
+            response['tier2'] = {
+                'graph_summary':     t2['graph_summary'],
+                'best_vehicle':      t2['best_vehicle'],
+                'routes_by_vehicle': t2['routes_by_vehicle'],
+            }
+            if req.include_images and 'route_viz_b64' in t2:
+                response['tier2']['route_viz_b64'] = t2['route_viz_b64']
+
+        return JSONResponse(response)
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    except Exception:
+        raise HTTPException(500, traceback.format_exc())
+
+
+# =============================================================================
+# Live Change Detection  —  Two-epoch Sentinel-2 + OSM road overlay
+# =============================================================================
+
+@app.post('/live/change', tags=['Live Analysis'])
+async def live_change(req: LiveChangeRequest):
+    """
+    **Detect land cover and visual change between two time periods using Sentinel-2.**
+
+    Compares two Sentinel-2 median composites (before / after) for the same
+    bounding box and returns:
+    - RGB change magnitude map (orange = new construction, blue = new vegetation)
+    - Land cover class change table (urban↑, forest↓, etc.)
+    - Current OSM road network overlaid on the change map
+
+    **Requirements:**
+    - `pip install earthengine-api osmnx`
+    - `earthengine authenticate`
+    """
+    if not _GEE_OK:
+        raise HTTPException(503,
+            "GEE not available. Run: pip install earthengine-api "
+            "then: earthengine authenticate")
+
+    try:
+        bbox = [req.lon_min, req.lat_min, req.lon_max, req.lat_max]
+        conn = SentinelConnector(project_id=req.project_id)
+
+        # ── 1. Fetch before + after from GEE ─────────────────────────────────
+        print("[INFO] Fetching T1 (before)...")
+        rgb_t1, meta_t1 = conn.fetch(bbox, req.before_start,
+                                     req.before_end, req.cloud_pct)
+        print("[INFO] Fetching T2 (after)...")
+        rgb_t2, meta_t2 = conn.fetch(bbox, req.after_start,
+                                     req.after_end, req.cloud_pct)
+
+        # ── 2. RGB change map ─────────────────────────────────────────────────
+        change = compute_rgb_change(rgb_t1, rgb_t2,
+                                    threshold=req.change_threshold)
+
+        response: dict = {
+            'source':         'sentinel-2-change',
+            'before_metadata': meta_t1,
+            'after_metadata':  meta_t2,
+            'change': {
+                'changed_pct':    change['changed_pct'],
+                'increased_px':   change['increased_px'],   # brighter (construction)
+                'decreased_px':   change['decreased_px'],   # darker   (vegetation)
+                'threshold_used': req.change_threshold,
+            },
+        }
+
+        if req.include_images:
+            response['before_rgb_b64']    = _img_to_b64(
+                cv2.cvtColor(rgb_t1, cv2.COLOR_RGB2BGR))
+            response['after_rgb_b64']     = _img_to_b64(
+                cv2.cvtColor(rgb_t2, cv2.COLOR_RGB2BGR))
+            response['change_map_b64']    = _img_to_b64(
+                cv2.cvtColor(change['change_map_rgb'], cv2.COLOR_RGB2BGR))
+
+        # ── 3. Land cover change ──────────────────────────────────────────────
+        if 'landcover' in _models:
+            class_names = ['urban', 'agriculture', 'rangeland',
+                           'forest', 'water', 'barren', 'unknown']
+            _, ids_t1 = _landcover_predict(rgb_t1)
+            _, ids_t2 = _landcover_predict(rgb_t2)
+
+            lc_change_table = []
+            for i, cls in enumerate(class_names):
+                before_px = int((ids_t1 == i).sum())
+                after_px  = int((ids_t2 == i).sum())
+                lc_change_table.append({
+                    'class':     cls,
+                    'before_px': before_px,
+                    'after_px':  after_px,
+                    'delta_px':  after_px - before_px,
+                    'delta_pct': round(
+                        (after_px - before_px) / max(before_px, 1) * 100, 1),
+                })
+
+            # Dominant change = class with largest absolute delta
+            dominant = max(lc_change_table,
+                           key=lambda x: abs(x['delta_px']), default=None)
+            response['change']['lc_change_table']  = lc_change_table
+            response['change']['dominant_change']  = (
+                dominant['class'] if dominant else 'none')
+            response['change']['dominant_direction'] = (
+                'increase' if dominant and dominant['delta_px'] > 0
+                else 'decrease')
+
+            if req.include_images:
+                lc_map_t1, _ = _landcover_predict(rgb_t1)
+                lc_map_t2, _ = _landcover_predict(rgb_t2)
+                response['before_lc_b64'] = _img_to_b64(
+                    cv2.cvtColor(lc_map_t1, cv2.COLOR_RGB2BGR))
+                response['after_lc_b64']  = _img_to_b64(
+                    cv2.cvtColor(lc_map_t2, cv2.COLOR_RGB2BGR))
+
+        # ── 4. OSM road overlay on change map ─────────────────────────────────
+        if _OSM_OK:
+            try:
+                osm = OSMConnector()
+                osm_result = osm.fetch(req.lat_min, req.lon_min,
+                                       req.lat_max, req.lon_max)
+                road_mask = osm_result['mask']
+                response['osm_metadata'] = {
+                    'total_roads':    osm_result['total_roads'],
+                    'total_length_m': osm_result['total_length_m'],
+                    'highway_counts': osm_result['highway_counts'],
+                }
+                if req.include_images:
+                    # Overlay OSM roads (yellow) on change map
+                    overlay = change['change_map_rgb'].copy()
+                    overlay[road_mask > 0] = [255, 230, 0]   # yellow roads
+                    response['change_with_roads_b64'] = _img_to_b64(
+                        cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
+            except Exception as osm_err:
+                response['osm_warning'] = f"OSM overlay skipped: {osm_err}"
+
+        return JSONResponse(response)
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
     except Exception:
         raise HTTPException(500, traceback.format_exc())

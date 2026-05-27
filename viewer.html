@@ -143,6 +143,49 @@
     .badge.v1{background:rgba(31,111,235,.2);color:#7ea6ff}
     .badge.v2{background:rgba(210,153,34,.2);color:var(--unpaved)}
     .badge.v3{background:rgba(248,81,73,.2);color:var(--damaged)}
+
+    /* ── Sentinel-2 Panel ── */
+    .sentinel-tab{background:linear-gradient(135deg,rgba(35,134,54,.15),rgba(31,111,235,.15));border-color:rgba(35,134,54,.4)!important;color:#3fb950!important}
+    .sentinel-tab.active{background:linear-gradient(135deg,#238636,#1f6feb)!important;color:#fff!important;border-color:transparent!important}
+    .sentinel-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:1.5rem;margin-bottom:1rem}
+    .sentinel-header{display:flex;gap:1rem;align-items:flex-start;margin-bottom:1.25rem}
+    .sentinel-icon{font-size:2.2rem;line-height:1}
+    .sentinel-title{font-size:1.05rem;font-weight:700;color:#e6edf3;margin-bottom:.2rem}
+    .sentinel-sub{font-size:.78rem;color:var(--muted)}
+    .sentinel-grid{display:grid;gap:1rem;margin-bottom:1.25rem}
+    .s-group{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem}
+    .s-group-title{font-size:.78rem;font-weight:700;color:var(--muted);margin-bottom:.75rem;text-transform:uppercase;letter-spacing:.05em}
+    .bbox-grid{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.6rem}
+    .bbox-field label{display:block;font-size:.72rem;color:var(--muted);margin-bottom:.25rem;font-weight:500}
+    .bbox-field input[type=number],.bbox-field input[type=date]{width:100%;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:.4rem .6rem;font-size:.83rem;outline:none}
+    .bbox-field input:focus{border-color:var(--a2)}
+    .date-row{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
+    .options-row{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
+    .preset-row{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;margin-top:.4rem}
+    .preset-label{font-size:.72rem;color:var(--muted)}
+    .preset-btn{background:rgba(255,255,255,.06);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:.2rem .65rem;font-size:.75rem;cursor:pointer;transition:all .15s}
+    .preset-btn:hover{border-color:var(--a2);color:var(--road)}
+    .sentinel-footer{display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+    .sentinel-note{font-size:.75rem;color:var(--muted)}
+    .btn-sentinel{background:linear-gradient(135deg,#238636,#1f6feb);color:#fff;border:none;border-radius:8px;padding:.65rem 1.75rem;font-size:.9rem;font-weight:700;cursor:pointer;transition:opacity .2s;white-space:nowrap}
+    .btn-sentinel:hover{opacity:.85}
+    .btn-sentinel:disabled{opacity:.4;cursor:not-allowed}
+    .sentinel-rgb-note{font-size:.72rem;color:var(--muted);background:rgba(31,111,235,.08);border:1px solid rgba(31,111,235,.2);border-radius:6px;padding:.4rem .8rem;margin-bottom:1rem}
+    /* Live mode toggle */
+    .live-mode-bar{display:flex;gap:.4rem;margin-bottom:1.1rem;background:var(--surface);border-radius:10px;padding:.35rem}
+    .live-mode-btn{flex:1;padding:.45rem .5rem;border-radius:7px;border:none;font-size:.78rem;font-weight:600;cursor:pointer;background:transparent;color:var(--muted);transition:all .2s}
+    .live-mode-btn.active{background:var(--card);color:#e6edf3;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+    /* Change detection table */
+    .change-table{width:100%;border-collapse:collapse;font-size:.82rem;margin-bottom:1.25rem}
+    .change-table th{background:var(--surface);color:var(--muted);padding:.45rem .7rem;text-align:left;border-bottom:1px solid var(--border);font-weight:600}
+    .change-table td{padding:.45rem .7rem;border-bottom:1px solid #21262d}
+    .change-table tr:last-child td{border:none}
+    .delta-pos{color:var(--paved);font-weight:700}
+    .delta-neg{color:var(--damaged);font-weight:700}
+    .delta-bar{display:inline-block;height:6px;border-radius:3px;vertical-align:middle;margin-left:.4rem}
+    /* OSM badge */
+    .osm-badge{display:inline-flex;align-items:center;gap:.35rem;background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.3);border-radius:6px;padding:.25rem .7rem;font-size:.72rem;color:var(--paved);font-weight:600;margin-bottom:.75rem}
+
   </style>
 </head>
 <body>
@@ -161,14 +204,166 @@
     <button class="tab active" onclick="switchTab('analyze')">🛣️ Analyze</button>
     <button class="tab"        onclick="switchTab('route')"  >🗺️ Route</button>
     <button class="tab"        onclick="switchTab('full')"   >🌍 Full Pipeline</button>
+    <button class="tab sentinel-tab" onclick="switchTab('sentinel')">🛰️ Live Analysis</button>
   </div>
 
-  <!-- ── Upload ── -->
+  <!-- ── Upload (hidden in Sentinel mode) ── -->
   <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
     <div class="icon">📷</div>
     <h2>Drop a satellite image here</h2>
     <p>or click to browse — JPG / PNG / TIFF</p>
     <input type="file" id="fileInput" accept="image/*"/>
+  </div>
+
+  <!-- ── Live Analysis Panel ── -->
+  <div id="sentinel-panel" style="display:none">
+    <div class="sentinel-card">
+      <div class="sentinel-header">
+        <span class="sentinel-icon">🛰️</span>
+        <div>
+          <div class="sentinel-title">Live Analysis</div>
+          <div class="sentinel-sub">OSM real-world road network • Sentinel-2 land cover • Temporal change detection</div>
+        </div>
+      </div>
+
+      <!-- Mode selector -->
+      <div class="live-mode-bar">
+        <button class="live-mode-btn active" id="lmb_sentinel" onclick="setLiveMode('sentinel')">🛰️ Sentinel-2 Only</button>
+        <button class="live-mode-btn"        id="lmb_live"     onclick="setLiveMode('live')"    >🗺️ Live Road Analysis</button>
+        <button class="live-mode-btn"        id="lmb_change"   onclick="setLiveMode('change')" >📅 Change Detection</button>
+      </div>
+
+      <!-- Shared: bbox + presets -->
+      <div class="s-group" style="margin-bottom:.75rem">
+        <div class="s-group-title">📍 Bounding Box (EPSG:4326)</div>
+        <div class="bbox-grid">
+          <div class="bbox-field"><label>Lat Min</label><input type="number" id="s_lat_min" value="12.90" step="0.01" min="-90" max="90"/></div>
+          <div class="bbox-field"><label>Lat Max</label><input type="number" id="s_lat_max" value="13.10" step="0.01" min="-90" max="90"/></div>
+          <div class="bbox-field"><label>Lon Min</label><input type="number" id="s_lon_min" value="77.50" step="0.01" min="-180" max="180"/></div>
+          <div class="bbox-field"><label>Lon Max</label><input type="number" id="s_lon_max" value="77.70" step="0.01" min="-180" max="180"/></div>
+        </div>
+        <div class="preset-row">
+          <span class="preset-label">Presets (~5km):</span>
+          <button class="preset-btn" onclick="setPreset(12.945,13.005,77.555,77.635)">Bangalore</button>
+          <button class="preset-btn" onclick="setPreset(28.575,28.635,77.175,77.255)">Delhi</button>
+          <button class="preset-btn" onclick="setPreset(18.955,19.015,72.825,72.905)">Mumbai</button>
+          <button class="preset-btn" onclick="setPreset(22.545,22.605,88.335,88.415)">Kolkata</button>
+          <button class="preset-btn" onclick="setPreset(17.375,17.435,78.455,78.535)">Hyderabad</button>
+          <button class="preset-btn" onclick="setPreset(22.275,22.335,70.775,70.855)">Jamshedpur</button>
+        </div>
+      </div>
+
+      <!-- Mode: Sentinel-2 Only -->
+      <div id="lm_sentinel">
+        <div class="sentinel-grid">
+          <div class="s-group">
+            <div class="s-group-title">📅 Date Range (Sentinel-2)</div>
+            <div class="date-row">
+              <div class="bbox-field"><label>Start</label><input type="date" id="s_start" value="2024-01-01"/></div>
+              <div class="bbox-field"><label>End</label><input type="date" id="s_end" value="2024-03-31"/></div>
+            </div>
+          </div>
+          <div class="s-group">
+            <div class="s-group-title">⚙️ Options</div>
+            <div class="options-row">
+              <div class="bbox-field">
+                <label>Cloud Cover Max</label>
+                <div style="display:flex;align-items:center;gap:.5rem">
+                  <input type="range" id="s_cloud" min="5" max="80" value="20" oninput="document.getElementById('s_cloud_val').textContent=this.value+'%'" style="flex:1;accent-color:var(--a2)"/>
+                  <span id="s_cloud_val" style="font-size:.82rem;color:var(--road);font-weight:700;min-width:35px">20%</span>
+                </div>
+              </div>
+              <div class="bbox-field">
+                <label>Vehicle</label>
+                <select id="s_vehicle" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:.4rem .6rem;font-size:.83rem;width:100%">
+                  <option value="car">🚗 Car</option>
+                  <option value="truck">🚛 Truck</option>
+                  <option value="motorcycle">🏍️ Motorcycle</option>
+                  <option value="pedestrian">🚶 Pedestrian</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="sentinel-footer">
+          <div class="sentinel-note">⚠️ Requires GEE auth • ~15-30s • Land cover only (10m res)</div>
+          <button class="btn-sentinel" id="btnSentinel" onclick="runSentinel()">🛰️ Fetch Sentinel-2</button>
+        </div>
+      </div>
+
+      <!-- Mode: Live Road Analysis -->
+      <div id="lm_live" style="display:none">
+        <div class="sentinel-grid">
+          <div class="s-group">
+            <div class="s-group-title">📅 Date Range (Sentinel-2 land cover)</div>
+            <div class="date-row">
+              <div class="bbox-field"><label>Start</label><input type="date" id="l_start" value="2024-01-01"/></div>
+              <div class="bbox-field"><label>End</label><input type="date" id="l_end" value="2024-03-31"/></div>
+            </div>
+          </div>
+          <div class="s-group">
+            <div class="s-group-title">⚙️ Options</div>
+            <div class="options-row">
+              <div class="bbox-field">
+                <label>Vehicle</label>
+                <select id="l_vehicle" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:.4rem .6rem;font-size:.83rem;width:100%">
+                  <option value="car">🚗 Car</option>
+                  <option value="truck">🚛 Truck</option>
+                  <option value="motorcycle">🏍️ Motorcycle</option>
+                  <option value="pedestrian">🚶 Pedestrian</option>
+                </select>
+              </div>
+              <div class="bbox-field">
+                <label>Cloud Cover Max</label>
+                <div style="display:flex;align-items:center;gap:.5rem">
+                  <input type="range" id="l_cloud" min="5" max="80" value="20" oninput="document.getElementById('l_cloud_val').textContent=this.value+'%'" style="flex:1;accent-color:var(--a2)"/>
+                  <span id="l_cloud_val" style="font-size:.82rem;color:var(--road);font-weight:700;min-width:35px">20%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="sentinel-footer">
+          <div class="sentinel-note">🗺️ OSM roads (free, no auth) + Sentinel-2 land cover (GEE optional) • Full Tier 1+2 pipeline</div>
+          <button class="btn-sentinel" id="btnLive" onclick="runLive()">🗺️ Run Live Analysis</button>
+        </div>
+      </div>
+
+      <!-- Mode: Change Detection -->
+      <div id="lm_change" style="display:none">
+        <div class="sentinel-grid">
+          <div class="s-group">
+            <div class="s-group-title">⏳ Before Period</div>
+            <div class="date-row">
+              <div class="bbox-field"><label>Start</label><input type="date" id="c_before_start" value="2022-01-01"/></div>
+              <div class="bbox-field"><label>End</label>  <input type="date" id="c_before_end"   value="2022-06-30"/></div>
+            </div>
+          </div>
+          <div class="s-group">
+            <div class="s-group-title">🕒 After Period</div>
+            <div class="date-row">
+              <div class="bbox-field"><label>Start</label><input type="date" id="c_after_start" value="2024-01-01"/></div>
+              <div class="bbox-field"><label>End</label>  <input type="date" id="c_after_end"   value="2024-06-30"/></div>
+            </div>
+          </div>
+          <div class="s-group">
+            <div class="s-group-title">⚙️ Sensitivity</div>
+            <div class="bbox-field">
+              <label>Change Threshold (lower = more sensitive)</label>
+              <div style="display:flex;align-items:center;gap:.5rem">
+                <input type="range" id="c_thresh" min="2" max="30" value="10" oninput="document.getElementById('c_thresh_val').textContent=(this.value/100).toFixed(2)" style="flex:1;accent-color:var(--a2)"/>
+                <span id="c_thresh_val" style="font-size:.82rem;color:var(--road);font-weight:700;min-width:35px">0.10</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="sentinel-footer">
+          <div class="sentinel-note">🛰️ Two Sentinel-2 fetches + land cover comparison + OSM road overlay • ~30-60s</div>
+          <button class="btn-sentinel" id="btnChange" onclick="runChange()">📅 Detect Changes</button>
+        </div>
+      </div>
+
+    </div>
   </div>
 
   <!-- ── Preview ── -->
@@ -196,11 +391,17 @@
   // ── Tabs ─────────────────────────────────────────────────────────────────────
   function switchTab(m) {
     mode = m;
+    const tabNames = ['analyze','route','full','sentinel'];
     document.querySelectorAll('.tab').forEach((t,i) => {
-      t.classList.toggle('active', ['analyze','route','full'][i] === m);
+      t.classList.toggle('active', tabNames[i] === m);
     });
+    const isSentinel = m === 'sentinel';
+    document.getElementById('dropZone').style.display    = isSentinel ? 'none' : '';
+    document.getElementById('preview-wrap').style.display = isSentinel ? 'none' : '';
+    document.getElementById('sentinel-panel').style.display = isSentinel ? 'block' : 'none';
+    document.getElementById('controls').style.display    = isSentinel ? 'none' : '';
     renderControls();
-    document.getElementById('results').style.display  = 'none';
+    document.getElementById('results').style.display   = 'none';
     document.getElementById('error-box').style.display = 'none';
   }
 
@@ -399,6 +600,337 @@
       document.getElementById('btnRun').disabled = false;
     }
   }
+
+  // ── Sentinel-2 fetch ──────────────────────────────────────────────────────────
+  function setPreset(latMin, latMax, lonMin, lonMax) {
+    document.getElementById('s_lat_min').value = latMin;
+    document.getElementById('s_lat_max').value = latMax;
+    document.getElementById('s_lon_min').value = lonMin;
+    document.getElementById('s_lon_max').value = lonMax;
+  }
+
+  async function runSentinel() {
+    const btn = document.getElementById('btnSentinel');
+    btn.disabled = true;
+    document.getElementById('spinner').style.display   = 'block';
+    document.getElementById('spinner').querySelector('p').textContent =
+      'Fetching Sentinel-2 from Google Earth Engine... (15-30s)';
+    document.getElementById('results').style.display   = 'none';
+    document.getElementById('error-box').style.display = 'none';
+
+    const payload = {
+      lat_min:        parseFloat(document.getElementById('s_lat_min').value),
+      lat_max:        parseFloat(document.getElementById('s_lat_max').value),
+      lon_min:        parseFloat(document.getElementById('s_lon_min').value),
+      lon_max:        parseFloat(document.getElementById('s_lon_max').value),
+      start_date:     document.getElementById('s_start').value,
+      end_date:       document.getElementById('s_end').value,
+      vehicle:        document.getElementById('s_vehicle').value,
+      cloud_pct:      parseFloat(document.getElementById('s_cloud').value),
+      include_images: true,
+    };
+
+    try {
+      const resp = await fetch(`${API}/sentinel`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      const data = await resp.json();
+      renderSentinel(data);
+    } catch(err) {
+      const box = document.getElementById('error-box');
+      box.textContent = 'Error: ' + err.message;
+      box.style.display = 'block';
+    } finally {
+      document.getElementById('spinner').style.display = 'none';
+      btn.disabled = false;
+    }
+  }
+
+  function renderSentinel(data) {
+    let html = '';
+
+    // Sentinel metadata banner
+    const sm = data.sentinel_metadata || {};
+    html += `<div class="sentinel-rgb-note">
+      &#x1F6F0;&#xFE0F; <strong>Sentinel-2</strong> &nbsp;|&nbsp;
+      ${sm.image_count ?? '?'} scenes composited &nbsp;|&nbsp;
+      Cloud filter: &lt;${sm.cloud_pct_threshold ?? '?'}%
+      ${sm.relaxed_filter ? ' <span style="color:var(--unpaved)">(relaxed)</span>' : ''} &nbsp;|&nbsp;
+      ${sm.start_date ?? ''} &rarr; ${sm.end_date ?? ''} &nbsp;|&nbsp;
+      Bbox: [${(sm.bbox||[]).map(v=>v.toFixed(3)).join(', ')}]
+    </div>`;
+
+    // Raw Sentinel RGB
+    if (data.sentinel_rgb_b64) {
+      html += section('&#x1F6F0;&#xFE0F; Sentinel-2 RGB (fetched image)',
+        `<div class="img-grid">${b64Img(data.sentinel_rgb_b64, 'Raw Sentinel-2 RGB (upsampled to 512px)')}</div>
+         <p style="font-size:.75rem;color:var(--muted);margin-bottom:1rem">10m/pixel native resolution &mdash; major roads and land features visible; small roads may not appear.</p>`);
+    }
+
+    // Road
+    const road = data.road || {};
+    html += section('&#x1F6E3;&#xFE0F; Road Extraction', `
+      <div class="stats-grid">${statCards([
+        { label:'Road pixels', value:(road.road_pixels||0).toLocaleString() },
+        { label:'Coverage',    value:(road.road_pct||0).toFixed(2), unit:'%' },
+      ])}</div>
+      <div class="img-grid">${road.mask_b64 ? b64Img(road.mask_b64,'Road Mask') : ''}</div>`);
+
+    // Land cover
+    const lc = data.landcover || {};
+    if (Object.keys(lc).length) {
+      html += section('&#x1F33F; Land Cover', `
+        ${lcPills(lc.pixel_counts)}
+        <div class="img-grid">${lc.map_b64 ? b64Img(lc.map_b64,'Land Cover Map') : ''}</div>`);
+    }
+
+    // Building
+    const bld = data.building || {};
+    if (Object.keys(bld).length) {
+      html += section('&#x1F3E2; Building Detection', `
+        <div class="stats-grid">${statCards([
+          { label:'Building px', value:(bld.building_pixels||0).toLocaleString() },
+          { label:'Coverage',    value:(bld.building_pct||0).toFixed(2), unit:'%' },
+        ])}</div>
+        <div class="img-grid">${bld.mask_b64 ? b64Img(bld.mask_b64,'Building Mask') : ''}</div>`);
+    }
+
+    // Tier 1
+    const t1 = data.tier1;
+    if (t1 && !t1.is_empty)
+      html += section('&#x1F4D0; Tier 1 &mdash; Width & Surface', renderTier1Block(t1, true));
+
+    // Tier 2
+    if (data.tier2)
+      html += section('&#x1F5FA;&#xFE0F; Tier 2 &mdash; Graph Routing', renderTier2Block(data.tier2, true));
+
+    paint(html);
+  }
+
+  // ── Live mode toggle ─────────────────────────────────────────────────────────
+  let liveMode = 'sentinel';
+  function setLiveMode(m) {
+    liveMode = m;
+    ['sentinel','live','change'].forEach(k => {
+      document.getElementById('lmb_'+k).classList.toggle('active', k===m);
+      document.getElementById('lm_'+k).style.display = k===m ? '' : 'none';
+    });
+    document.getElementById('results').style.display   = 'none';
+    document.getElementById('error-box').style.display = 'none';
+  }
+
+  // ── Live Road Analysis (/live) ────────────────────────────────────────────────
+  async function runLive() {
+    const btn = document.getElementById('btnLive');
+    btn.disabled = true;
+    document.getElementById('spinner').style.display = 'block';
+    document.getElementById('spinner').querySelector('p').textContent =
+      'Fetching OSM road network + Sentinel-2 land cover...';
+    document.getElementById('results').style.display   = 'none';
+    document.getElementById('error-box').style.display = 'none';
+
+    const payload = {
+      lat_min:        parseFloat(document.getElementById('s_lat_min').value),
+      lat_max:        parseFloat(document.getElementById('s_lat_max').value),
+      lon_min:        parseFloat(document.getElementById('s_lon_min').value),
+      lon_max:        parseFloat(document.getElementById('s_lon_max').value),
+      start_date:     document.getElementById('l_start').value,
+      end_date:       document.getElementById('l_end').value,
+      vehicle:        document.getElementById('l_vehicle').value,
+      cloud_pct:      parseFloat(document.getElementById('l_cloud').value),
+      include_images: true,
+    };
+
+    try {
+      const resp = await fetch(`${API}/live`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      renderLive(await resp.json());
+    } catch(err) {
+      const box = document.getElementById('error-box');
+      box.textContent = 'Error: ' + err.message;
+      box.style.display = 'block';
+    } finally {
+      document.getElementById('spinner').style.display = 'none';
+      btn.disabled = false;
+    }
+  }
+
+  function renderLive(data) {
+    let html = '';
+    const osm = data.osm_metadata || {};
+
+    // OSM badge
+    html += `<div class="osm-badge">&#x1F5FA;&#xFE0F; OpenStreetMap &nbsp;|&nbsp;
+      ${osm.total_roads ?? '?'} road segments &nbsp;|&nbsp;
+      ${((osm.total_length_m||0)/1000).toFixed(1)} km total &nbsp;|&nbsp;
+      ${osm.n_nodes ?? '?'} nodes / ${osm.n_edges ?? '?'} edges
+    </div>`;
+
+    // Sentinel warning if GEE unavailable
+    if (data.sentinel_warning)
+      html += `<div style="font-size:.75rem;color:var(--unpaved);margin-bottom:.75rem">&#x26A0;&#xFE0F; ${data.sentinel_warning}</div>`;
+
+    // OSM road mask
+    const road = data.road || {};
+    let roadInner = `<div class="stats-grid">${statCards([
+      { label:'Road pixels', value:(road.road_pixels||0).toLocaleString() },
+      { label:'Coverage',    value:(road.road_pct||0).toFixed(2), unit:'%' },
+      { label:'Road segments', value:(osm.total_roads||0).toLocaleString() },
+      { label:'Road length', value:((osm.total_length_m||0)/1000).toFixed(1), unit:'km' },
+    ])}</div>`;
+    // Highway breakdown pills
+    if (osm.highway_counts) {
+      const colors = {motorway:'#f85149',primary:'#d29922',secondary:'#58a6ff',residential:'#3fb950',track:'#8b949e'};
+      roadInner += '<div class="pill-row">' + Object.entries(osm.highway_counts)
+        .sort((a,b)=>b[1]-a[1]).slice(0,8)
+        .map(([hw,cnt]) => `<span class="pill generic" style="border-color:${colors[hw]||'#555'};color:${colors[hw]||'#aaa'}">${hw}: ${cnt}</span>`)
+        .join('') + '</div>';
+    }
+    if (road.mask_b64) roadInner += `<div class="img-grid">${b64Img(road.mask_b64,'OSM Road Mask')}</div>`;
+    html += section('&#x1F5FA;&#xFE0F; Road Network (OpenStreetMap)', roadInner);
+
+    // Sentinel-2 RGB
+    if (data.sentinel_rgb_b64)
+      html += section('&#x1F6F0;&#xFE0F; Sentinel-2 RGB',
+        `<div class="img-grid">${b64Img(data.sentinel_rgb_b64,'Sentinel-2 RGB')}</div>`);
+
+    // Land cover
+    const lc = data.landcover || {};
+    if (Object.keys(lc).length)
+      html += section('&#x1F33F; Land Cover (Sentinel-2)',
+        `${lcPills(lc.pixel_counts)}<div class="img-grid">${lc.map_b64?b64Img(lc.map_b64,'Land Cover Map'):''}</div>`);
+
+    // Tier 1
+    const t1 = data.tier1;
+    if (t1 && !t1.is_empty)
+      html += section('&#x1F4D0; Tier 1 &mdash; Width &amp; Surface', renderTier1Block(t1, true));
+
+    // Tier 2
+    if (data.tier2)
+      html += section('&#x1F6E3;&#xFE0F; Tier 2 &mdash; Graph Routing', renderTier2Block(data.tier2, true));
+
+    paint(html);
+  }
+
+  // ── Change Detection (/live/change) ──────────────────────────────────────────
+  async function runChange() {
+    const btn = document.getElementById('btnChange');
+    btn.disabled = true;
+    document.getElementById('spinner').style.display = 'block';
+    document.getElementById('spinner').querySelector('p').textContent =
+      'Fetching two Sentinel-2 epochs + computing change... (~30-60s)';
+    document.getElementById('results').style.display   = 'none';
+    document.getElementById('error-box').style.display = 'none';
+
+    const payload = {
+      lat_min:          parseFloat(document.getElementById('s_lat_min').value),
+      lat_max:          parseFloat(document.getElementById('s_lat_max').value),
+      lon_min:          parseFloat(document.getElementById('s_lon_min').value),
+      lon_max:          parseFloat(document.getElementById('s_lon_max').value),
+      before_start:     document.getElementById('c_before_start').value,
+      before_end:       document.getElementById('c_before_end').value,
+      after_start:      document.getElementById('c_after_start').value,
+      after_end:        document.getElementById('c_after_end').value,
+      change_threshold: parseFloat(document.getElementById('c_thresh').value) / 100,
+      include_images:   true,
+    };
+
+    try {
+      const resp = await fetch(`${API}/live/change`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      renderChange(await resp.json());
+    } catch(err) {
+      const box = document.getElementById('error-box');
+      box.textContent = 'Error: ' + err.message;
+      box.style.display = 'block';
+    } finally {
+      document.getElementById('spinner').style.display = 'none';
+      btn.disabled = false;
+    }
+  }
+
+  function renderChange(data) {
+    let html = '';
+    const ch = data.change || {};
+    const bm = data.before_metadata || {};
+    const am = data.after_metadata  || {};
+
+    // Summary stats
+    html += section('&#x1F4CA; Change Summary', `
+      <div class="stats-grid">${statCards([
+        { label:'Area Changed',  value:(ch.changed_pct||0).toFixed(1), unit:'%' },
+        { label:'&#x1F7E0; Brighter px', value:(ch.increased_px||0).toLocaleString(), unit:'construction/clearing' },
+        { label:'&#x1F535; Darker px',   value:(ch.decreased_px||0).toLocaleString(), unit:'vegetation/flooding' },
+        { label:'Dominant Change', value: ch.dominant_change || '—' },
+        { label:'Direction',       value: ch.dominant_direction || '—' },
+        { label:'Before scenes',   value: bm.image_count ?? '—' },
+        { label:'After scenes',    value: am.image_count ?? '—' },
+      ])}</div>
+      <div class="sentinel-rgb-note">
+        &#x23F3; <strong>Before</strong>: ${bm.start_date||''} &rarr; ${bm.end_date||''} &nbsp;|&nbsp;
+        &#x1F551; <strong>After</strong>: ${am.start_date||''} &rarr; ${am.end_date||''}
+      </div>`);
+
+    // Before / After RGB side-by-side
+    if (data.before_rgb_b64 || data.after_rgb_b64) {
+      html += section('&#x1F6F0;&#xFE0F; Before vs After (Sentinel-2 RGB)', `
+        <div class="img-grid">
+          ${data.before_rgb_b64 ? b64Img(data.before_rgb_b64, 'Before') : ''}
+          ${data.after_rgb_b64  ? b64Img(data.after_rgb_b64,  'After')  : ''}
+        </div>`);
+    }
+
+    // Change maps
+    const changeMaps = [];
+    if (data.change_map_b64)       changeMaps.push(b64Img(data.change_map_b64,       '&#x1F7E0; Change Map (orange=construction, blue=vegetation)'));
+    if (data.change_with_roads_b64)changeMaps.push(b64Img(data.change_with_roads_b64,'&#x1F7E1; Change + OSM Roads (yellow)'));
+    if (changeMaps.length)
+      html += section('&#x1F5FA;&#xFE0F; Change Map', `<div class="img-grid">${changeMaps.join('')}</div>
+        <p style="font-size:.74rem;color:var(--muted);margin-bottom:1rem">&#x1F7E0; Orange = brighter in After (new construction, road paving, bare soil) &nbsp;|&nbsp; &#x1F535; Blue = darker in After (new vegetation, flooding) &nbsp;|&nbsp; &#x1F7E1; Yellow = current OSM roads</p>`);
+
+    // LC change table
+    if (ch.lc_change_table && ch.lc_change_table.length) {
+      const maxDelta = Math.max(...ch.lc_change_table.map(r=>Math.abs(r.delta_px)), 1);
+      let rows = ch.lc_change_table.map(r => {
+        const isPos = r.delta_px >= 0;
+        const barW  = Math.round(Math.abs(r.delta_px)/maxDelta*80);
+        const barCol= isPos ? 'var(--paved)' : 'var(--damaged)';
+        return `<tr>
+          <td>${r.class}</td>
+          <td>${(r.before_px||0).toLocaleString()}</td>
+          <td>${(r.after_px||0).toLocaleString()}</td>
+          <td class="${isPos?'delta-pos':'delta-neg'}">${isPos?'+':''}${(r.delta_px||0).toLocaleString()}
+            <span class="delta-bar" style="width:${barW}px;background:${barCol}"></span>
+          </td>
+          <td class="${isPos?'delta-pos':'delta-neg'}">${isPos?'+':''}${r.delta_pct}%</td>
+        </tr>`;
+      }).join('');
+      html += section('&#x1F33F; Land Cover Change Table', `
+        <table class="change-table">
+          <thead><tr><th>Class</th><th>Before px</th><th>After px</th><th>Delta</th><th>Delta %</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`);
+    }
+
+    // Before / After LC maps
+    if (data.before_lc_b64 || data.after_lc_b64)
+      html += section('&#x1F30D; Land Cover Maps', `<div class="img-grid">
+        ${data.before_lc_b64 ? b64Img(data.before_lc_b64,'Before Land Cover') : ''}
+        ${data.after_lc_b64  ? b64Img(data.after_lc_b64, 'After Land Cover')  : ''}
+      </div>`);
+
+    paint(html);
+  }
+
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
   function b64Img(b64, title) {
