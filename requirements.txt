@@ -50,3 +50,6 @@ scipy>=1.10.0                     # binary_dilation for building subtraction in 
 fastapi>=0.110.0                  # app.py REST API server
 uvicorn[standard]>=0.29.0         # ASGI server  (uvicorn app:app --reload)
 python-multipart>=0.0.9           # required by FastAPI for UploadFile support
+
+# ── Cloud Integration ─────────────────────────────────────────────────────────
+huggingface-hub>=0.20.0           # auto-downloads weights from HF models repo

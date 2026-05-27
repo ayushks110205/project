@@ -95,7 +95,15 @@ def _resolve_weight(env_key: str, filename: str) -> str:
         return flat_path
     if os.path.isfile(nested_path):
         return nested_path
-    return flat_path  # return anyway — lifespan will log the missing-file error
+    
+    # Auto-download from HF Models repo if not found locally
+    try:
+        from huggingface_hub import hf_hub_download
+        print(f"[INFO] Downloading {filename} from Hugging Face Hub (Ayushks07/updated_weights_of_roadextr)...")
+        return hf_hub_download(repo_id="Ayushks07/updated_weights_of_roadextr", filename=filename)
+    except Exception as e:
+        print(f"[WARNING] Could not download {filename} from HF Hub: {e}")
+        return flat_path
 
 _W = {
     'road':      _resolve_weight('ROAD_WEIGHTS',      'road_model_best.pth'),
