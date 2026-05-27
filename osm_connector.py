@@ -325,20 +325,23 @@ class OSMConnector:
 # =============================================================================
 
 def compute_rgb_change(rgb_t1: np.ndarray, rgb_t2: np.ndarray,
-                       threshold: float = 0.10) -> dict:
+                       threshold: float = 0.12,
+                       min_area_px: int  = 80) -> dict:
     """
     Compute pixel-level change between two RGB images.
 
     Args:
-        rgb_t1    : (H,W,3) uint8  — 'before' image
-        rgb_t2    : (H,W,3) uint8  — 'after'  image
-        threshold : Normalised change magnitude considered significant (0–1).
-                    Default 0.10 = 10% change.
+        rgb_t1       : (H,W,3) uint8  — 'before' image
+        rgb_t2       : (H,W,3) uint8  — 'after'  image
+        threshold    : Normalised change magnitude considered significant (0–1).
+                       Default 0.12 = 12% change.
+        min_area_px  : Minimum contiguous changed-pixel blob area to keep.
+                       Smaller blobs (noise, cloud artefacts) are discarded.
 
     Returns:
         dict with:
             magnitude       — (H,W) float32 normalised change [0,1]
-            change_mask     — (H,W) bool
+            change_mask     — (H,W) bool   (after denoising)
             change_map_rgb  — (H,W,3) uint8 colour-coded change image
                               Orange = brighter (construction / bare soil)
                               Blue   = darker   (new vegetation / flooding)
@@ -346,17 +349,40 @@ def compute_rgb_change(rgb_t1: np.ndarray, rgb_t2: np.ndarray,
             increased_px    — count of orange (brighter) change pixels
             decreased_px    — count of blue   (darker)  change pixels
     """
+    from scipy.ndimage import (gaussian_filter, binary_opening,
+                                label as nd_label, sum as nd_sum)
+
     f1 = rgb_t1.astype(np.float32)
     f2 = rgb_t2.astype(np.float32)
 
-    diff      = f2 - f1                                          # (H,W,3)
+    # ── Step 1: Smooth both images before diffing ─────────────────────────────
+    # A 1-pixel Gaussian blur removes single-pixel sensor noise before we diff
+    f1_s = gaussian_filter(f1, sigma=1.0)
+    f2_s = gaussian_filter(f2, sigma=1.0)
+
+    diff      = f2_s - f1_s                                       # (H,W,3)
     max_norm  = np.sqrt(3.0 * 255.0 ** 2)
-    magnitude = np.linalg.norm(diff, axis=2) / max_norm          # (H,W) 0→1
+    magnitude = np.linalg.norm(diff, axis=2) / max_norm           # (H,W) 0→1
 
     change_mask = magnitude > threshold
-    mean_diff   = diff.mean(axis=2)                              # positive=brighter
-    increased   = change_mask & (mean_diff > 0)                  # orange
-    decreased   = change_mask & (mean_diff < 0)                  # blue
+
+    # ── Step 2: Morphological opening — removes isolated pixel clumps ─────────
+    # opening = erosion then dilation; destroys tiny blobs, keeps large ones
+    struct = np.ones((3, 3), dtype=bool)
+    change_mask = binary_opening(change_mask, structure=struct, iterations=2)
+
+    # ── Step 3: Remove small connected components (cloud artefacts, noise) ────
+    labeled, n_components = nd_label(change_mask)
+    component_sizes = nd_sum(change_mask, labeled, range(1, n_components + 1))
+    small = np.array(component_sizes) < min_area_px
+    remove_pixels = small[labeled - 1]
+    remove_pixels[labeled == 0] = False
+    change_mask[remove_pixels] = False
+
+    # ── Step 4: Direction map ─────────────────────────────────────────────────
+    mean_diff = diff.mean(axis=2)
+    increased = change_mask & (mean_diff > 0)   # orange = brighter
+    decreased = change_mask & (mean_diff < 0)   # blue   = darker
 
     change_map = np.zeros_like(rgb_t1)
     change_map[increased] = [255, 100, 30]    # orange-red = construction
@@ -370,6 +396,7 @@ def compute_rgb_change(rgb_t1: np.ndarray, rgb_t2: np.ndarray,
         'increased_px':   int(increased.sum()),
         'decreased_px':   int(decreased.sum()),
     }
+
 
 
 # =============================================================================
