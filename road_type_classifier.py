@@ -493,17 +493,24 @@ class RoadTypeClassifier:
         if not skeleton.any():
             return self._empty_predict_result(H, W, skeleton)
 
-        feats, points = self._build_feature_matrix(image_rgb, skeleton)
-
-        if feats.shape[0] == 0:
-            return self._empty_predict_result(H, W, skeleton)
-
-        # ── Branch: RF or KMeans ──────────────────────────────────────────────
-        if self._rf_bundle is not None:
-            pred_labels, confidence, clf_name = self._predict_rf(feats)
+        # Skip feature extraction if the image is pure black (e.g. OSM-only mode)
+        if image_rgb.mean() < 5:
+            points = np.argwhere(skeleton)
+            pred_labels = ['unpaved'] * len(points)
+            confidence = [1.0] * len(points)
+            clf_name = 'default_unpaved (no satellite data)'
         else:
-            pred_labels, confidence, clf_name = self._predict_kmeans(
-                feats, image_rgb, road_mask)
+            feats, points = self._build_feature_matrix(image_rgb, skeleton)
+
+            if feats.shape[0] == 0:
+                return self._empty_predict_result(H, W, skeleton)
+
+            # ── Branch: RF or KMeans ──────────────────────────────────────────────
+            if self._rf_bundle is not None:
+                pred_labels, confidence, clf_name = self._predict_rf(feats)
+            else:
+                pred_labels, confidence, clf_name = self._predict_kmeans(
+                    feats, image_rgb, road_mask)
 
         # ── Build output maps ─────────────────────────────────────────────────
         surface_map    = np.full((H, W), '', dtype=object)
