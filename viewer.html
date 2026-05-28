@@ -1072,6 +1072,18 @@
 
   // ── Render: /route ───────────────────────────────────────────────────────────
   function renderRoute(data, incImages) {
+    // ── Apply Auto-Snapping feedback ──────────────────────────────────────────
+    if (data.tier2 && data.tier2.snapped_pins && typeof routePins !== 'undefined' && routePins.length === 2) {
+      const sp = data.tier2.snapped_pins;
+      routePins = [
+        { x: sp.src_x, y: sp.src_y },
+        { x: sp.dst_x, y: sp.dst_y }
+      ];
+      drawPins();
+      const el = document.getElementById('pinInfo');
+      if (el) el.innerHTML = '✨ <strong>Pins snapped</strong> to nearest connected road. Move them and re-run if needed!';
+    }
+
     let html = '';
 
     // Quick road stat
