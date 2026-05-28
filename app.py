@@ -671,12 +671,13 @@ async def route(
             'type_result':  t1['type_result'],
         }
 
-        # Map fractional display coords → 512×512 model pixel coords
+        # Map fractional display coords → actual image pixel coords (H, W)
         src_rc = None
         dst_rc = None
         if src_x is not None and src_y is not None and dst_x is not None and dst_y is not None:
-            src_rc = (int(src_y * 512), int(src_x * 512))
-            dst_rc = (int(dst_y * 512), int(dst_x * 512))
+            H, W = rgb.shape[:2]
+            src_rc = (int(src_y * H), int(src_x * W))
+            dst_rc = (int(dst_y * H), int(dst_x * W))
 
         t2 = _run_tier2(rgb, tier1_result, vehicle, stem, include_images,
                         src_rc=src_rc, dst_rc=dst_rc)
