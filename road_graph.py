@@ -476,7 +476,15 @@ def _route_stats(G: nx.Graph,
 
     for u, v in zip(node_path[:-1], node_path[1:]):
         ed = G[u][v]
-        pixel_path.extend(ed['pixel_path'])
+        edge_path = ed['pixel_path']
+        
+        # Ensure the pixel path is oriented from u -> v.
+        # It may have been traced from v -> u during graph construction.
+        rc_u = (G.nodes[u]['row'], G.nodes[u]['col'])
+        if tuple(edge_path[0]) != rc_u:
+            edge_path = edge_path[::-1]
+            
+        pixel_path.extend(edge_path)
         distances.append(ed['length_m'])
         costs.append(ed.get(cost_key, ed['length_m']))
         widths.append(ed['mean_width_m'])
