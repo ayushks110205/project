@@ -669,13 +669,15 @@ async def route(
             'type_result':  t1['type_result'],
         }
 
-        # Map fractional display coords → actual image pixel coords (H, W)
+        # Map fractional display coords → 512x512 space (Tier 2 graph space)
+        # CRITICAL FIX: The graph is always built on the 512x512 road mask from the ML model,
+        # regardless of the original image dimensions. We must map the fractions to 512x512.
         src_rc = None
         dst_rc = None
         if src_x is not None and src_y is not None and dst_x is not None and dst_y is not None:
-            H, W = rgb.shape[:2]
-            src_rc = (int(src_y * H), int(src_x * W))
-            dst_rc = (int(dst_y * H), int(dst_x * W))
+            H_graph, W_graph = 512, 512
+            src_rc = (int(src_y * H_graph), int(src_x * W_graph))
+            dst_rc = (int(dst_y * H_graph), int(dst_x * W_graph))
 
         t2 = _run_tier2(rgb, tier1_result, vehicle, stem, include_images,
                         src_rc=src_rc, dst_rc=dst_rc)
