@@ -624,6 +624,45 @@ def find_nearest_node_in_component(G: nx.Graph,
     return node_ids[int(np.argmin(dists))]
 
 
+def snap_src_dst_nodes(G: nx.Graph,
+                       src_rc: tuple,
+                       dst_rc: tuple) -> tuple:
+    """
+    Snap (src_rc, dst_rc) pixel coords to graph nodes, guaranteeing both
+    nodes are in the same connected component so a route can always be found.
+
+    Args:
+        G      : NetworkX graph from RoadGraph.
+        src_rc : (row, col) of source click in image pixels.
+        dst_rc : (row, col) of destination click in image pixels.
+
+    Returns:
+        (src_node_id, dst_node_id) — both in the same component.
+        Returns (None, None) if the graph has fewer than 2 nodes.
+    """
+    if G.number_of_nodes() < 2:
+        return None, None
+
+    s_r, s_c = src_rc
+    d_r, d_c = dst_rc
+
+    src = find_nearest_node(G, s_r, s_c)
+    if src is None:
+        return None, None
+
+    # Find which connected component src lives in
+    src_component = next(
+        (c for c in nx.connected_components(G) if src in c), set())
+
+    # Snap dst to nearest node in THAT component
+    dst = find_nearest_node_in_component(G, d_r, d_c, src_component)
+
+    print(f"  snap_src_dst: src=({s_r},{s_c})→{src}  "
+          f"dst=({d_r},{d_c})→{dst}  "
+          f"component_size={len(src_component)}")
+    return src, dst
+
+
 def pick_src_dst_auto(G: nx.Graph,
                       max_sample: int = 500,
                       rng_seed:   int = 0
