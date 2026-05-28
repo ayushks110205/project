@@ -63,6 +63,7 @@ try:
         RoadGraph, find_top3_routes, pick_src_dst_auto,
         draw_routes, VEHICLE_TYPES, get_graph_summary,
         find_nearest_node,
+        find_nearest_node_in_component,
     )
     _TIER2_OK = True
 except ImportError:
@@ -449,8 +450,23 @@ def _run_tier2(rgb: np.ndarray, tier1_result: dict,
         s_r, s_c = src_rc
         d_r, d_c = dst_rc
         src = find_nearest_node(G, s_r, s_c)
-        dst = find_nearest_node(G, d_r, d_c)
-        print(f"📍 User src=({s_r},{s_c})→node {src}  dst=({d_r},{d_c})→node {dst}")
+
+        # ── Same-component snapping ───────────────────────────────────────────
+        # Find which connected component src lives in, then snap dst to the
+        # nearest node IN THAT SAME component. This guarantees a path exists
+        # even when the user clicks on a road fragment that is disconnected
+        # from the fragment containing the source pin.
+        if src is not None:
+            components = list(nx.connected_components(G))
+            src_component = next(
+                (c for c in components if src in c), set())
+            dst = find_nearest_node_in_component(G, d_r, d_c, src_component)
+            print(f"📍 User src=({s_r},{s_c})→node {src}  "
+                  f"dst=({d_r},{d_c})→node {dst}  "
+                  f"(snapped to same component, size={len(src_component)})")
+        else:
+            dst = find_nearest_node(G, d_r, d_c)
+            print(f"📍 User src=({s_r},{s_c})→node {src}  dst=({d_r},{d_c})→node {dst}")
     else:
         src, dst = pick_src_dst_auto(G)
 

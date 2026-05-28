@@ -381,15 +381,15 @@ class RoadGraph:
         if not skel.any():
             return G  # empty graph for empty skeleton
 
-        # Bridge thin gaps caused by 1-2 px dirt paths / building subtraction.
-        # Dilate by 2 iterations then re-skeletonize to reconnect fragments.
-        # We re-import skeletonize here to avoid a top-level circular dep.
+        # Bridge thin gaps caused by narrow dirt paths / building subtraction.
+        # Use 5 iterations (was 2) to reconnect rural road fragments that have
+        # larger breaks between detected skeleton segments.
         try:
             from skimage.morphology import skeletonize as _skel_fn
-            skel_dilated = _bin_dilate(skel, iterations=2)
+            skel_dilated = _bin_dilate(skel, iterations=5)
             skel = _skel_fn(skel_dilated).astype(bool)
             print(f"  Skeleton bridging: "
-                  f"{int(skel.sum())} px after gap-fill dilation")
+                  f"{int(skel.sum())} px after gap-fill dilation (5 iters)")
         except Exception as _e:
             print(f"  Skeleton bridging skipped ({_e})")
 
@@ -589,6 +589,34 @@ def find_nearest_node(G: nx.Graph, row: int, col: int) -> Optional[int]:
     if G.number_of_nodes() == 0:
         return None
     node_ids = list(G.nodes())
+    coords   = np.array([[G.nodes[n]['row'], G.nodes[n]['col']]
+                          for n in node_ids], dtype=np.float32)
+    query    = np.array([row, col], dtype=np.float32)
+    dists    = np.sqrt(((coords - query) ** 2).sum(axis=1))
+    return node_ids[int(np.argmin(dists))]
+
+
+def find_nearest_node_in_component(G: nx.Graph,
+                                   row: int, col: int,
+                                   component: set) -> Optional[int]:
+    """
+    Find the graph node nearest to *(row, col)* that is inside *component*.
+
+    Used to ensure source and destination are always in the same connected
+    component so that a route can actually be found.
+
+    Args:
+        G         : NetworkX graph.
+        row       : pixel row of the query point.
+        col       : pixel column of the query point.
+        component : set of node IDs to search within.
+
+    Returns:
+        Node ID of the nearest node in *component*, or None if empty.
+    """
+    if not component:
+        return None
+    node_ids = list(component)
     coords   = np.array([[G.nodes[n]['row'], G.nodes[n]['col']]
                           for n in node_ids], dtype=np.float32)
     query    = np.array([row, col], dtype=np.float32)
