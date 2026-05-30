@@ -1235,7 +1235,7 @@ async def autocomplete_proxy(q: str, state: str = ""):
     def _call_mappls(query: str):
         return _requests.get(
             "https://atlas.mappls.com/api/places/search/json",
-            params={"query": query, "access_token": _MAPPLS_KEY},
+            params={"query": query, "rest_key": _MAPPLS_KEY},
             timeout=5,
         )
 
