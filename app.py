@@ -1127,7 +1127,7 @@ async def live_change(req: LiveChangeRequest):
 
         response: dict = {
             'source':         'sentinel-2-change',
-            'before_metadata': meta_t1,
+                'before_metadata': meta_t1,
             'after_metadata':  meta_t2,
             'change': {
                 'changed_pct':    change['changed_pct'],
@@ -1219,8 +1219,32 @@ async def live_change(req: LiveChangeRequest):
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Mappls API key — set as HuggingFace secret "MAPPLS_KEY"
-_MAPPLS_KEY: str = os.environ.get("MAPPLS_KEY", "")
+_MAPPLS_KEY: str = os.environ.get("MAPPLS_KEY", "").strip()
 
+# Token cache
+_mappls_token_cache: dict = {"token": "", "expires_at": 0.0}
+
+def _get_mappls_token() -> str:
+    """Exchange static key for OAuth access_token. Cached until 5 min before expiry."""
+    import time
+    c = _mappls_token_cache
+    if c["token"] and time.time() < c["expires_at"]:
+        return c["token"]
+    print("  🔑 Fetching new Mappls OAuth token...")
+    r = _requests.post(
+        "https://outpost.mappls.com/api/security/oauth/token",
+        data={"grant_type": "client_credentials",
+              "client_id": _MAPPLS_KEY,
+              "client_secret": _MAPPLS_KEY},
+        timeout=10,
+    )
+    if not r.ok:
+        raise RuntimeError(f"Mappls token {r.status_code}: {r.text[:200]}")
+    d = r.json()
+    c["token"] = d["access_token"]
+    c["expires_at"] = time.time() + int(d.get("expires_in", 3600)) - 300
+    print(f"  ✅ Mappls token ok (expires_in={d.get('expires_in')}s)")
+    return c["token"]
 
 @app.get('/autocomplete', tags=['Navigation'], include_in_schema=False)
 async def autocomplete_proxy(q: str, state: str = ""):
@@ -1233,10 +1257,10 @@ async def autocomplete_proxy(q: str, state: str = ""):
         return JSONResponse({"results": [], "error": "Mappls key not configured"})
 
     def _call_mappls(query: str):
+        token = _get_mappls_token()
         return _requests.get(
             "https://atlas.mappls.com/api/places/search/json",
-            params={"query": query},
-            headers={"Authorization": f"Bearer {_MAPPLS_KEY}"},
+            params={"query": query, "access_token": token},
             timeout=5,
         )
 

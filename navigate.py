@@ -154,10 +154,21 @@ def geocode(place: str) -> Tuple[float, float]:
 
     # ── Mappls Geocoding REST API ─────────────────────────────────────────────
     try:
+        # Exchange static key for OAuth access_token
+        tok_resp = _req.post(
+            "https://outpost.mappls.com/api/security/oauth/token",
+            data={"grant_type": "client_credentials",
+                  "client_id": mappls_key,
+                  "client_secret": mappls_key},
+            timeout=10,
+        )
+        if not tok_resp.ok:
+            raise ValueError(f"Mappls auth failed {tok_resp.status_code}: {tok_resp.text[:100]}")
+        access_token = tok_resp.json()["access_token"]
+
         resp = _req.get(
             "https://atlas.mappls.com/api/places/geocode",
-            params={"address": place, "region": "IND"},
-            headers={"Authorization": f"Bearer {mappls_key}"},
+            params={"address": place, "region": "IND", "access_token": access_token},
             timeout=10,
         )
         resp.raise_for_status()
