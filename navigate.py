@@ -175,7 +175,7 @@ def _cached_graph_from_bbox(north: float, south: float,
     print(f"  📡 Downloading OSM graph: "
           f"bbox=({north},{south},{east},{west}), type={network_type}")
     G = ox.graph_from_bbox(
-        bbox=(north, south, east, west),   # osmnx >= 2.0 keyword-only
+        bbox=(west, south, east, north),   # osmnx >= 2.0: (left, bottom, right, top)
         network_type=network_type,
     )
     return G
