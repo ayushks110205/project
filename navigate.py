@@ -487,7 +487,9 @@ def build_route_info(G, node_path: List[int], vehicle: str) -> dict:
     good_m       = 0.0
     unpaved_m    = 0.0
     damaged_m    = 0.0
-    warnings:  List[str] = []
+    
+    # Track damage per road name to aggregate warnings
+    damage_by_road: Dict[str, float] = {}
     polyline:  List[List[float]] = []
 
     for i, (u, v) in enumerate(zip(node_path[:-1], node_path[1:])):
@@ -535,8 +537,8 @@ def build_route_info(G, node_path: List[int], vehicle: str) -> dict:
                 name = name[0] if name else ''
             if not name:
                 name = 'unnamed road'
-            warnings.append(
-                f"Damaged surface on {name} (~{int(length_m)} m)")
+            
+            damage_by_road[name] = damage_by_road.get(name, 0.0) + length_m
         else:
             unpaved_m += length_m
 
@@ -544,6 +546,16 @@ def build_route_info(G, node_path: List[int], vehicle: str) -> dict:
     if not polyline and node_path:
         nd = G.nodes[node_path[0]]
         polyline.append([nd['y'], nd['x']])
+
+    # ── Format warnings ───────────────────────────────────────────────────────
+    warnings: List[str] = []
+    # Sort by longest damaged stretch first
+    for name, length in sorted(damage_by_road.items(), key=lambda x: x[1], reverse=True):
+        if length >= 1000:
+            dist_str = f"{length/1000:.1f} km"
+        else:
+            dist_str = f"{int(length)} m"
+        warnings.append(f"Damaged surface on {name} (~{dist_str} total)")
 
     return {
         'distance_km':       round(total_dist_m / 1000, 1),
