@@ -84,6 +84,14 @@ try:
 except ImportError:
     pass
 
+# Navigate module
+_NAVIGATE_OK = False
+try:
+    from navigate import navigate as run_navigate
+    _NAVIGATE_OK = True
+except ImportError:
+    pass
+
 def _resolve_weight(env_key: str, filename: str) -> str:
     """
     Resolve model weight path.
@@ -562,6 +570,13 @@ class LiveChangeRequest(BaseModel):
     cloud_pct:      float         = 20.0
     project_id:     Optional[str] = None
     change_threshold: float       = 0.10
+
+
+class NavigateRequest(BaseModel):
+    """Request body for POST /navigate — geocoded routing with ML surface analysis."""
+    origin:      str
+    destination: str
+    vehicle:     str = 'car'
 
 
 
@@ -1193,5 +1208,47 @@ async def live_change(req: LiveChangeRequest):
         raise
     except ValueError as exc:
         raise HTTPException(422, str(exc))
+    except Exception:
+        raise HTTPException(500, traceback.format_exc())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Navigate UI & Endpoint
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get('/navigate-ui', tags=['Navigation'], include_in_schema=False)
+async def navigate_ui():
+    """Serve the RoadSense navigator UI."""
+    return FileResponse('navigator.html', media_type='text/html')
+
+
+@app.post('/navigate', tags=['Navigation'])
+async def navigate_endpoint(req: NavigateRequest):
+    """
+    **Real-world geocoded routing with ML surface analysis.**
+
+    Accepts place names or lat,lng coordinates for origin and destination.
+    Returns fastest and safest routes with distance, time, polyline,
+    per-segment surface breakdown, and damage warnings.
+    """
+    if not _NAVIGATE_OK:
+        raise HTTPException(503, "Navigate module not available. "
+                            "Check that osmnx and geopy are installed.")
+
+    valid_vehicles = ['pedestrian', 'motorcycle', 'car', 'truck']
+    if req.vehicle not in valid_vehicles:
+        raise HTTPException(422, f"vehicle must be one of {valid_vehicles}")
+
+    try:
+        result = run_navigate(req.origin, req.destination, req.vehicle)
+        return JSONResponse(result)
+    except ValueError as exc:
+        # Geocoding failures → 400, no-route → 404
+        msg = str(exc)
+        if 'No route found' in msg:
+            raise HTTPException(404, msg)
+        raise HTTPException(400, msg)
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(500, traceback.format_exc())

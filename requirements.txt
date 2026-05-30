@@ -59,3 +59,4 @@ osmnx>=1.9.1                      # OpenStreetMap vector routing & graphs
 earthengine-api>=0.1.390          # Google Earth Engine for Sentinel-2
 requests>=2.28.0                  # required for Earth Engine auth/fetching
 google-auth>=2.28.0               # service account JSON auth for GEE
+geopy>=2.3.0                      # Nominatim geocoding for /navigate endpoint
