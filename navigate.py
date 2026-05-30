@@ -156,7 +156,8 @@ def geocode(place: str) -> Tuple[float, float]:
     try:
         resp = _req.get(
             "https://atlas.mappls.com/api/places/geocode",
-            params={"address": place, "rest_key": mappls_key, "region": "IND"},
+            params={"address": place, "region": "IND"},
+            headers={"Authorization": f"Bearer {mappls_key}"},
             timeout=10,
         )
         resp.raise_for_status()
