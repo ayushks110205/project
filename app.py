@@ -31,6 +31,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import requests as _requests  # for Mappls proxy
+
 import cv2
 import numpy as np
 import torch
@@ -1213,8 +1215,72 @@ async def live_change(req: LiveChangeRequest):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Navigate UI & Endpoint
+# Navigate UI, Autocomplete Proxy & Routing Endpoint
 # ══════════════════════════════════════════════════════════════════════════════
+
+# Mappls API key — set as HuggingFace secret "MAPPLS_KEY"
+_MAPPLS_KEY: str = os.environ.get("MAPPLS_KEY", "")
+
+
+@app.get('/autocomplete', tags=['Navigation'], include_in_schema=False)
+async def autocomplete_proxy(q: str, state: str = ""):
+    """
+    Server-side proxy for Mappls Place Search.
+    Keeps the API key off the browser.
+    Returns: {"results": [{name, address, lat, lon}]}
+    """
+    if not _MAPPLS_KEY:
+        return JSONResponse({"results": [], "error": "Mappls key not configured"})
+
+    def _call_mappls(query: str):
+        return _requests.get(
+            "https://atlas.mappls.com/api/places/search/json",
+            params={"query": query, "access_token": _MAPPLS_KEY},
+            timeout=5,
+        )
+
+    def _parse(resp) -> list:
+        if not resp.ok:
+            print(f"  ⚠️  Mappls autocomplete HTTP {resp.status_code}: {resp.text[:200]}")
+            return []
+        data = resp.json()
+        print(f"  🔍 Mappls raw keys: {list(data.keys())}")
+        raw = data.get("suggestedLocations") or data.get("results") or []
+        print(f"  🔍 Mappls raw count: {len(raw)} | first: {raw[0] if raw else 'none'}")
+        results = []
+        for loc in raw[:6]:
+            lat = loc.get("latitude") or loc.get("lat") or ""
+            lon = loc.get("longitude") or loc.get("lng") or loc.get("lon") or ""
+            if not lat or not lon:
+                continue
+            results.append({
+                "name":    loc.get("placeName")    or loc.get("name", ""),
+                "address": loc.get("placeAddress") or loc.get("address", ""),
+                "lat":     str(lat),
+                "lon":     str(lon),
+            })
+        return results
+
+    try:
+        # First attempt: query + state (biased search)
+        query = f"{q}, {state}" if state else q
+        print(f"  🔍 Mappls autocomplete query: '{query}'")
+        resp = _call_mappls(query)
+        results = _parse(resp)
+
+        # Fallback: if state-scoped attempt found nothing, retry with bare query
+        if not results and state:
+            print(f"  🔄 No results with state, retrying bare query: '{q}'")
+            resp2 = _call_mappls(q)
+            results = _parse(resp2)
+
+        return JSONResponse({"results": results})
+
+    except Exception as exc:
+        print(f"  ❌ Mappls autocomplete error: {exc}")
+        return JSONResponse({"results": [], "error": str(exc)})
+
+
 
 @app.get('/navigate-ui', tags=['Navigation'], include_in_schema=False)
 async def navigate_ui():

@@ -18,8 +18,11 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import functools
 import math
+import os
+import requests as _req
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -126,10 +129,19 @@ def geocode(place: str) -> Tuple[float, float]:
     """
     Convert a place name or ``'lat,lng'`` string to ``(lat, lng)`` floats.
 
+    Tries raw coordinate parsing first (fast path — always used when the
+    frontend autocomplete has cached coordinates).  Falls back to the
+    Mappls Geocoding REST API for plain text queries.
+
     Raises:
         ValueError: if the place cannot be geocoded.
     """
-    # Try raw coordinate parsing first
+    # ── Guard: key must be present before anything else ──────────────────────
+    mappls_key = os.environ.get("MAPPLS_KEY", "").strip()
+    if not mappls_key:
+        raise ValueError("Mappls API key not configured.")
+
+    # ── Fast path: raw "lat,lng" string (sent by frontend after autocomplete) ──
     parts = place.strip().split(',')
     if len(parts) == 2:
         try:
@@ -140,12 +152,39 @@ def geocode(place: str) -> Tuple[float, float]:
         except ValueError:
             pass
 
-    # Geocode via Nominatim
-    geolocator = Nominatim(user_agent="roadsense_road_extraction_v2", timeout=10)
-    location = geolocator.geocode(place)
-    if location is None:
-        raise ValueError(f"Could not locate: {place}")
-    return (location.latitude, location.longitude)
+    # ── Mappls Geocoding REST API ─────────────────────────────────────────────
+    try:
+        resp = _req.get(
+            "https://atlas.mappls.com/api/places/geocode",
+            params={"address": place, "access_token": mappls_key, "region": "IND"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Mappls returns results under 'copResults' (single) or 'results' (list)
+        cop = data.get("copResults") or {}
+        if not cop and data.get("results"):
+            cop = data["results"][0]
+
+        # ── Guard: empty response or missing latitude ─────────────────────────
+        if not cop or "latitude" not in cop:
+            raise ValueError(f"Could not locate: {place}")
+
+        lat = float(cop.get("latitude")  or cop.get("lat", 0))
+        lon = float(cop.get("longitude") or cop.get("lng") or cop.get("lon", 0))
+
+        if lat == 0.0 and lon == 0.0:
+            raise ValueError(f"Could not locate: {place}")
+
+        print(f"  📍 Mappls geocode: '{place}' → ({lat:.5f}, {lon:.5f})")
+        return (lat, lon)
+
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"Could not geocode '{place}': {exc}") from exc
+
 
 
 # =============================================================================
