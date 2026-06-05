@@ -1276,136 +1276,116 @@ def _get_mappls_token() -> str:
     return c["token"]
 
 
+# ── Coord cache: place_name -> (lat,lon). Lives for server lifetime.
+# First keystroke geocodes via Nominatim (max 1 call per request).
+# Every subsequent keystroke returning the same place_name hits cache instantly.
+_autocomplete_coord_cache: dict = {}
+
+
 @app.get('/autocomplete', tags=['Navigation'], include_in_schema=False)
 async def autocomplete_proxy(q: str, state: str = ""):
     """
-    Mappls autocomplete — OAuth only.
-    Flow: Place Search → top-3 eLoc codes → parallel Geocode API (?eLoc=)
-    Place Details returns 404 on our plan tier; Geocode API is the correct
-    endpoint to convert eLoc → coordinates.
-    Returns: {"results": [{name, address, lat, lon}]}
+    Mappls autocomplete. Suggestions from Mappls Place Search (India-quality POI data).
+    Coords resolved: cache -> Mappls Geocode -> Nominatim (max 1/request, rate-limit safe).
+    Root cause of 429: old code used ThreadPoolExecutor(3) -> 3 parallel Nominatim
+    calls per keystroke. Fix: sequential, max 1 external call per request, cache results.
     """
     if not (_MAPPLS_CLIENT_ID or _MAPPLS_KEY):
         return JSONResponse({"results": [], "error": "Mappls credentials not configured"})
-
     try:
         token = _get_mappls_token()
     except Exception as e:
         return JSONResponse({"results": [], "error": str(e)})
 
-    # ── Step 1: Place Search to get eLoc codes ────────────────────────────────
     query = f"{q}, {state}" if state else q
-    search_resp = _requests.get(
-        "https://atlas.mappls.com/api/places/search/json",
-        params={"query": query, "access_token": token},
-        timeout=6,
-    )
-    if not search_resp.ok:
-        # Try bare query if state-scoped failed
-        if state:
+    try:
+        search_resp = _requests.get(
+            "https://atlas.mappls.com/api/places/search/json",
+            params={"query": query, "access_token": token}, timeout=6,
+        )
+        if not search_resp.ok and state:
             search_resp = _requests.get(
                 "https://atlas.mappls.com/api/places/search/json",
-                params={"query": q, "access_token": token},
-                timeout=6,
+                params={"query": q, "access_token": token}, timeout=6,
             )
-    if not search_resp.ok:
-        print(f"  Place Search {search_resp.status_code}: {search_resp.text[:120]}")
-        return JSONResponse({"results": []})
+    except Exception as e:
+        return JSONResponse({"results": [], "error": str(e)})
 
+    if not search_resp.ok:
+        return JSONResponse({"results": []})
     raw = (search_resp.json().get("suggestedLocations") or
            search_resp.json().get("results") or [])
-    print(f"  Place Search raw={len(raw)}")
     if not raw:
         return JSONResponse({"results": []})
 
-    # ── Step 2: Resolve top-3 results → coords ───────────────────────────────
-    def _resolve(loc: dict):
-        """
-        Try Mappls Geocode API first (address string).
-        If copResults empty → fall back to Nominatim for coordinates.
-        Suggestions still come from Mappls (names, addresses) — only coords differ.
-        """
-        place_name = loc.get("placeName") or loc.get("name") or ""
-        place_addr = loc.get("placeAddress") or loc.get("address") or ""
-        full_addr  = f"{place_name}, {place_addr}".strip(", ") if place_addr else place_name
-        if not full_addr:
-            return None
+    results  = []
+    ext_calls = 0   # max 1 Nominatim call per autocomplete request
+
+    for loc in raw[:8]:
+        place_name = (loc.get("placeName") or loc.get("name") or "").strip()
+        place_addr = (loc.get("placeAddress") or loc.get("address") or "").strip()
+        if not place_name:
+            continue
 
         lat_f = lon_f = 0.0
 
-        # Path A: Mappls Geocode API (works for precise addresses)
-        try:
-            r = _requests.get(
-                "https://atlas.mappls.com/api/places/geocode",
-                params={"address": full_addr, "region": "IND", "access_token": token},
-                timeout=5,
-            )
-            if r.ok:
-                cop = r.json().get("copResults") or {}
-                if isinstance(cop, list):
-                    cop = cop[0] if cop else {}
-                lat_s = cop.get("latitude")  or cop.get("lat")  or ""
-                lon_s = cop.get("longitude") or cop.get("lng")  or cop.get("lon") or ""
-                lat_f = float(lat_s) if lat_s else 0.0
-                lon_f = float(lon_s) if lon_s else 0.0
-                print(f"    Mappls Geocode '{place_name}' → lat={lat_s!r}, lon={lon_s!r}")
-        except Exception as ex:
-            print(f"    Mappls Geocode error '{place_name}': {ex}")
+        # A: cache hit (instant, no API call)
+        if place_name in _autocomplete_coord_cache:
+            lat_f, lon_f = _autocomplete_coord_cache[place_name]
 
-        # Path B: External geocoder cascade for coords (name/address still from Mappls)
-        def _ext_geocode(name: str) -> tuple:
-            # B1: Nominatim
-            try:
-                r2 = _requests.get(
-                    "https://nominatim.openstreetmap.org/search",
-                    params={"q": f"{name}, India", "format": "json",
-                            "countrycodes": "in", "limit": "1"},
-                    headers={"User-Agent": "RoadSense/2.0 (+huggingface.co)"},
-                    timeout=10,
-                )
-                print(f"    Nominatim '{name}' → {r2.status_code}: {r2.text[:120]}")
-                if r2.ok and r2.json():
-                    h = r2.json()[0]
-                    return float(h["lat"]), float(h["lon"])
-            except Exception as ex:
-                print(f"    Nominatim error: {ex}")
-            # B2: Photon
-            try:
-                r3 = _requests.get(
-                    "https://photon.komoot.io/api/",
-                    params={"q": f"{name}, India", "limit": "1", "lang": "en"},
-                    timeout=10,
-                )
-                print(f"    Photon '{name}' → {r3.status_code}: {r3.text[:120]}")
-                if r3.ok:
-                    feats = r3.json().get("features", [])
-                    if feats:
-                        c = feats[0]["geometry"]["coordinates"]
-                        return float(c[1]), float(c[0])
-            except Exception as ex:
-                print(f"    Photon error: {ex}")
-            return 0.0, 0.0
-
+        # B: Mappls Geocode (no rate limit; returns empty copResults for POIs)
         if not lat_f or not lon_f:
-            lat_f, lon_f = _ext_geocode(place_name)
+            try:
+                fa = f"{place_name}, {place_addr}" if place_addr else place_name
+                rg = _requests.get(
+                    "https://atlas.mappls.com/api/places/geocode",
+                    params={"address": fa, "region": "IND", "access_token": token},
+                    timeout=4,
+                )
+                if rg.ok:
+                    cop = rg.json().get("copResults") or {}
+                    if isinstance(cop, list):
+                        cop = cop[0] if cop else {}
+                    ls = cop.get("latitude") or cop.get("lat") or ""
+                    lo = cop.get("longitude") or cop.get("lng") or cop.get("lon") or ""
+                    lat_f = float(ls) if ls else 0.0
+                    lon_f = float(lo) if lo else 0.0
+            except Exception:
+                pass
+
+        # C: Nominatim — max 1 call per autocomplete request (rate-limit safe)
+        if (not lat_f or not lon_f) and ext_calls < 1:
+            try:
+                nom = _requests.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={"q": f"{place_name}, India", "format": "json",
+                            "countrycodes": "in", "limit": "1"},
+                    headers={"User-Agent": "RoadSense/2.0 (huggingface.co)"},
+                    timeout=8,
+                )
+                ext_calls += 1
+                if nom.status_code == 429:
+                    print(f"  Nom 429 rate-limited for '{place_name}' — skipping")
+                elif nom.ok and nom.json():
+                    h = nom.json()[0]
+                    lat_f = float(h.get("lat", 0))
+                    lon_f = float(h.get("lon", 0))
+                    if lat_f and lon_f:
+                        _autocomplete_coord_cache[place_name] = (lat_f, lon_f)
+                        print(f"  Nom cached '{place_name}' -> ({lat_f:.5f},{lon_f:.5f})")
+            except Exception as ex:
+                print(f"  Nom error '{place_name}': {ex}")
+                ext_calls += 1
 
         if lat_f and lon_f:
-            return {
-                "name":    place_name,
-                "address": place_addr,
-                "lat": str(lat_f),
-                "lon": str(lon_f),
-            }
-        return None
+            results.append({"name": place_name, "address": place_addr,
+                             "lat": str(lat_f), "lon": str(lon_f)})
+        if len(results) >= 3:
+            break
 
-    candidates = raw[:3]
-    import concurrent.futures as _cf
-    with _cf.ThreadPoolExecutor(max_workers=3) as ex:
-        resolved = list(ex.map(_resolve, candidates))
-
-    results = [r for r in resolved if r][:5]
-    print(f"  Autocomplete resolved={len(results)}")
+    print(f"  Autocomplete resolved={len(results)} cache={len(_autocomplete_coord_cache)}")
     return JSONResponse({"results": results})
+
 
 
 
