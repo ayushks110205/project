@@ -1279,9 +1279,10 @@ def _get_mappls_token() -> str:
 @app.get('/autocomplete', tags=['Navigation'], include_in_schema=False)
 async def autocomplete_proxy(q: str, state: str = ""):
     """
-    Mappls autocomplete — OAuth only (rest_key rejected by this endpoint).
-    Tries Place Search first; each result uses direct lat/lon if available,
-    or fetches coords via Place Details (eLoc) as a fallback.
+    Mappls autocomplete — OAuth only.
+    Flow: Place Search → top-3 eLoc codes → parallel Geocode API (?eLoc=)
+    Place Details returns 404 on our plan tier; Geocode API is the correct
+    endpoint to convert eLoc → coordinates.
     Returns: {"results": [{name, address, lat, lon}]}
     """
     if not (_MAPPLS_CLIENT_ID or _MAPPLS_KEY):
@@ -1292,79 +1293,69 @@ async def autocomplete_proxy(q: str, state: str = ""):
     except Exception as e:
         return JSONResponse({"results": [], "error": str(e)})
 
-    def _eloc_to_coords(eloc: str) -> tuple:
-        """Resolve an eLoc code to (lat, lon) via Place Details API."""
-        for place_id_key in ("place_id", "eLoc"):
-            try:
-                r = _requests.get(
-                    "https://atlas.mappls.com/api/places/place-details/json",
-                    params={place_id_key: eloc, "access_token": token},
-                    timeout=5,
-                )
-                if r.ok:
-                    d = r.json()
-                    pl = d.get("place") or d.get("result") or d
-                    lat = float(pl.get("latitude")  or pl.get("lat") or 0)
-                    lon = float(pl.get("longitude") or pl.get("lng") or 0)
-                    if lat and lon:
-                        return lat, lon
-            except Exception:
-                pass
-        return 0.0, 0.0
+    # ── Step 1: Place Search to get eLoc codes ────────────────────────────────
+    query = f"{q}, {state}" if state else q
+    search_resp = _requests.get(
+        "https://atlas.mappls.com/api/places/search/json",
+        params={"query": query, "access_token": token},
+        timeout=6,
+    )
+    if not search_resp.ok:
+        # Try bare query if state-scoped failed
+        if state:
+            search_resp = _requests.get(
+                "https://atlas.mappls.com/api/places/search/json",
+                params={"query": q, "access_token": token},
+                timeout=6,
+            )
+    if not search_resp.ok:
+        print(f"  Place Search {search_resp.status_code}: {search_resp.text[:120]}")
+        return JSONResponse({"results": []})
 
-    def _parse(resp) -> list:
-        if not resp.ok:
-            print(f"    Mappls {resp.status_code}: {resp.text[:120]}")
-            return []
-        data = resp.json()
-        raw  = data.get("suggestedLocations") or data.get("results") or []
-        if not raw:
-            return []
-        # Log first result structure once for debugging
-        print(f"    raw={len(raw)}, keys={list(raw[0].keys())}")
+    raw = (search_resp.json().get("suggestedLocations") or
+           search_resp.json().get("results") or [])
+    print(f"  Place Search raw={len(raw)}")
+    if not raw:
+        return JSONResponse({"results": []})
 
-        out = []
-        for loc in raw[:6]:
-            # Mappls Place Search may or may not include direct coords
-            try:
-                lat_f = float(loc.get("latitude")  or loc.get("lat") or 0)
-                lon_f = float(loc.get("longitude") or loc.get("lng") or
-                              loc.get("lon") or 0)
-            except (ValueError, TypeError):
-                lat_f = lon_f = 0.0
+    # ── Step 2: Resolve top-3 eLocs → coords via Geocode API in parallel ─────
+    def _resolve(loc: dict):
+        """GET /api/places/geocode?eLoc=<eloc> → (result_dict or None)"""
+        eloc = loc.get("eLoc") or loc.get("eloc") or ""
+        if not eloc:
+            return None
+        try:
+            r = _requests.get(
+                "https://atlas.mappls.com/api/places/geocode",
+                params={"eLoc": eloc, "access_token": token},
+                timeout=5,
+            )
+            print(f"    eLoc {eloc} → {r.status_code}: {r.text[:150]}")
+            if not r.ok:
+                return None
+            cop = r.json().get("copResults") or {}
+            lat_s = cop.get("latitude")  or cop.get("lat")  or ""
+            lon_s = cop.get("longitude") or cop.get("lng")  or cop.get("lon") or ""
+            lat_f = float(lat_s) if lat_s else 0.0
+            lon_f = float(lon_s) if lon_s else 0.0
+            if lat_f and lon_f:
+                return {
+                    "name":    loc.get("placeName")    or loc.get("name", ""),
+                    "address": loc.get("placeAddress") or loc.get("address", ""),
+                    "lat": str(lat_f),
+                    "lon": str(lon_f),
+                }
+        except Exception as ex:
+            print(f"    eLoc {eloc} error: {ex}")
+        return None
 
-            # If missing — resolve via eLoc → Place Details
-            if not lat_f or not lon_f:
-                eloc = loc.get("eLoc") or loc.get("eloc") or ""
-                if eloc:
-                    lat_f, lon_f = _eloc_to_coords(eloc)
+    candidates = raw[:3]   # only top-3 to keep latency under 2 s
+    import concurrent.futures as _cf
+    with _cf.ThreadPoolExecutor(max_workers=3) as ex:
+        resolved = list(ex.map(_resolve, candidates))
 
-            if not lat_f or not lon_f:
-                continue
-
-            out.append({
-                "name":    loc.get("placeName")    or loc.get("name", ""),
-                "address": loc.get("placeAddress") or loc.get("address", ""),
-                "lat": str(lat_f),
-                "lon": str(lon_f),
-            })
-
-        print(f"    parsed_with_coords={len(out)}")
-        return out
-
-    def _place_search(query: str) -> list:
-        r = _requests.get(
-            "https://atlas.mappls.com/api/places/search/json",
-            params={"query": query, "access_token": token},
-            timeout=6,
-        )
-        return _parse(r)
-
-    # Try state-scoped first, then bare
-    results = _place_search(f"{q}, {state}" if state else q)
-    if not results and state:
-        results = _place_search(q)
-
+    results = [r for r in resolved if r][:5]
+    print(f"  Autocomplete resolved={len(results)}")
     return JSONResponse({"results": results})
 
 

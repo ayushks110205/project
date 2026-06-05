@@ -212,7 +212,8 @@ def geocode(place: str) -> Tuple[float, float]:
     except Exception as exc:
         raise ValueError(f"Mappls auth failed: {exc}") from exc
 
-    # ── Path 2: Place Search → direct coords or eLoc → Place Details ─────────
+    # ── Path 2: Place Search → eLoc → Geocode API (?eLoc=) ──────────────────
+    # Place Details returns 404 on our plan; Geocode API with eLoc param is correct
     try:
         search_resp = _req.get(
             "https://atlas.mappls.com/api/places/search/json",
@@ -223,62 +224,53 @@ def geocode(place: str) -> Tuple[float, float]:
             raw = (search_resp.json().get("suggestedLocations") or
                    search_resp.json().get("results") or [])
             print(f"  🔍 Place Search: '{place}' → {len(raw)} raw results")
-            for loc in raw[:5]:
+            for loc in raw[:3]:
+                eloc = loc.get("eLoc") or loc.get("eloc") or ""
+                if not eloc:
+                    continue
                 try:
-                    lat_f = float(loc.get("latitude")  or loc.get("lat") or 0)
-                    lon_f = float(loc.get("longitude") or loc.get("lng") or
-                                  loc.get("lon") or 0)
-                except (TypeError, ValueError):
-                    lat_f = lon_f = 0.0
-
-                if not lat_f or not lon_f:
-                    eloc = loc.get("eLoc") or loc.get("eloc") or ""
-                    if eloc:
-                        for pid_key in ("place_id", "eLoc"):
-                            try:
-                                det = _req.get(
-                                    "https://atlas.mappls.com/api/places/place-details/json",
-                                    params={pid_key: eloc, "access_token": token},
-                                    timeout=5,
-                                )
-                                print(f"    eLoc {eloc} [{pid_key}] → {det.status_code}: {det.text[:200]}")
-                                if det.ok:
-                                    pl = (det.json().get("place") or
-                                          det.json().get("result") or
-                                          det.json().get("pageInfo") or det.json())
-                                    lat_f = float(pl.get("latitude")  or pl.get("lat") or 0)
-                                    lon_f = float(pl.get("longitude") or pl.get("lng") or 0)
-                                    if lat_f and lon_f:
-                                        break
-                            except Exception as de:
-                                print(f"    eLoc error: {de}")
-
-                if lat_f and lon_f:
-                    print(f"  📍 Place Search geocode: '{place}' → ({lat_f:.5f}, {lon_f:.5f})")
-                    return (lat_f, lon_f)
+                    det = _req.get(
+                        "https://atlas.mappls.com/api/places/geocode",
+                        params={"eLoc": eloc, "access_token": token},
+                        timeout=5,
+                    )
+                    print(f"    eLoc {eloc} → {det.status_code}: {det.text[:200]}")
+                    if det.ok:
+                        cop = det.json().get("copResults") or {}
+                        print(f"    copResults keys: {list(cop.keys())}")
+                        lat_s = cop.get("latitude")  or cop.get("lat")  or ""
+                        lon_s = cop.get("longitude") or cop.get("lng")  or cop.get("lon") or ""
+                        print(f"    lat={lat_s!r}, lng={lon_s!r}")
+                        lat_f = float(lat_s) if lat_s else 0.0
+                        lon_f = float(lon_s) if lon_s else 0.0
+                        if lat_f and lon_f:
+                            print(f"  📍 eLoc geocode: '{place}' → ({lat_f:.5f}, {lon_f:.5f})")
+                            return (lat_f, lon_f)
+                except Exception as de:
+                    print(f"    eLoc {eloc} error: {de}")
     except Exception as exc:
-        print(f"  ⚠️  Place Search geocode failed: {exc}")
+        print(f"  ⚠️  Place Search/eLoc geocode failed: {exc}")
 
-    # ── Path 3: Mappls Geocoding API ──────────────────────────────────────────
+    # ── Path 3: Geocode API by address name (works for some queries) ──────────
     try:
         resp = _req.get(
             "https://atlas.mappls.com/api/places/geocode",
             params={"address": place, "region": "IND", "access_token": token},
             timeout=10,
         )
-        print(f"  🔍 Geocode API: {resp.status_code} → {resp.text[:200]}")
+        print(f"  🔍 Geocode API (address): {resp.status_code} → {resp.text[:200]}")
         if resp.ok:
             data = resp.json()
             cop = data.get("copResults") or {}
-            if not cop and data.get("results"):
-                cop = data["results"][0]
-            if cop:
-                lat = float(cop.get("latitude")  or cop.get("lat") or 0)
-                lon = float(cop.get("longitude") or cop.get("lng") or
-                            cop.get("lon") or 0)
-                if lat and lon:
-                    print(f"  📍 Geocoding API: '{place}' → ({lat:.5f}, {lon:.5f})")
-                    return (lat, lon)
+            print(f"    copResults keys: {list(cop.keys())}")
+            lat_s = cop.get("latitude")  or cop.get("lat")  or ""
+            lon_s = cop.get("longitude") or cop.get("lng")  or cop.get("lon") or ""
+            print(f"    lat={lat_s!r}, lng={lon_s!r}")
+            lat_f = float(lat_s) if lat_s else 0.0
+            lon_f = float(lon_s) if lon_s else 0.0
+            if lat_f and lon_f:
+                print(f"  📍 Geocoding API: '{place}' → ({lat_f:.5f}, {lon_f:.5f})")
+                return (lat_f, lon_f)
     except Exception as exc:
         print(f"  ⚠️  Geocoding API failed: {exc}")
 
