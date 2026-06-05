@@ -1219,32 +1219,61 @@ async def live_change(req: LiveChangeRequest):
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Mappls API key — set as HuggingFace secret "MAPPLS_KEY"
-_MAPPLS_KEY: str = os.environ.get("MAPPLS_KEY", "").strip()
+# Mappls API credentials
+_MAPPLS_KEY:    str = os.environ.get("MAPPLS_KEY",           "").strip()
+_MAPPLS_SECRET: str = os.environ.get("MAPPLS_CLIENT_SECRET", "").strip()
 
-# Token cache
-_mappls_token_cache: dict = {"token": "", "expires_at": 0.0}
+# Token cache — caches both successes AND failures (backoff_until on failure)
+_mappls_token_cache: dict = {
+    "token":        "",
+    "expires_at":   0.0,
+    "backoff_until": 0.0,   # don't retry until this timestamp
+}
 
 def _get_mappls_token() -> str:
-    """Exchange static key for OAuth access_token. Cached until 5 min before expiry."""
+    """
+    Exchange Mappls credentials for an OAuth access_token.
+    Caches the token for its lifetime.
+    On failure, backs off for 60 s so keystrokes don't hammer the auth endpoint.
+    Reads MAPPLS_CLIENT_SECRET env-var if set; otherwise falls back to MAPPLS_KEY
+    as client_secret (works for some account types).
+    """
     import time
     c = _mappls_token_cache
+
+    # Return cached token if still valid
     if c["token"] and time.time() < c["expires_at"]:
         return c["token"]
+
+    # Don't retry during backoff window
+    if time.time() < c["backoff_until"]:
+        raise RuntimeError("Mappls auth in backoff — skipping retry")
+
+    client_secret = _MAPPLS_SECRET or _MAPPLS_KEY   # prefer dedicated secret
+    if not _MAPPLS_KEY or not client_secret:
+        raise RuntimeError("MAPPLS_KEY not configured")
+
     print("  🔑 Fetching new Mappls OAuth token...")
     r = _requests.post(
         "https://outpost.mappls.com/api/security/oauth/token",
-        data={"grant_type": "client_credentials",
-              "client_id": _MAPPLS_KEY,
-              "client_secret": _MAPPLS_KEY},
+        data={
+            "grant_type":    "client_credentials",
+            "client_id":     _MAPPLS_KEY,
+            "client_secret": client_secret,
+        },
         timeout=10,
     )
     if not r.ok:
+        c["backoff_until"] = time.time() + 60  # back off 60 s on failure
         raise RuntimeError(f"Mappls token {r.status_code}: {r.text[:200]}")
+
     d = r.json()
-    c["token"] = d["access_token"]
-    c["expires_at"] = time.time() + int(d.get("expires_in", 3600)) - 300
+    c["token"]      = d["access_token"]
+    c["expires_at"] = time.time() + int(d.get("expires_in", 21600)) - 300
+    c["backoff_until"] = 0.0
     print(f"  ✅ Mappls token ok (expires_in={d.get('expires_in')}s)")
     return c["token"]
+
 
 @app.get('/autocomplete', tags=['Navigation'], include_in_schema=False)
 async def autocomplete_proxy(q: str, state: str = ""):
