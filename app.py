@@ -1220,8 +1220,9 @@ async def live_change(req: LiveChangeRequest):
 
 # Mappls API key — set as HuggingFace secret "MAPPLS_KEY"
 # Mappls API credentials
-_MAPPLS_KEY:    str = os.environ.get("MAPPLS_KEY",           "").strip()
-_MAPPLS_SECRET: str = os.environ.get("MAPPLS_CLIENT_SECRET", "").strip()
+_MAPPLS_KEY:       str = os.environ.get("MAPPLS_KEY",           "").strip()  # static REST key
+_MAPPLS_CLIENT_ID: str = os.environ.get("MAPPLS_CLIENT_ID",    "").strip()  # OAuth client_id
+_MAPPLS_SECRET:    str = os.environ.get("MAPPLS_CLIENT_SECRET", "").strip()  # OAuth client_secret
 
 # Token cache — caches both successes AND failures (backoff_until on failure)
 _mappls_token_cache: dict = {
@@ -1233,10 +1234,9 @@ _mappls_token_cache: dict = {
 def _get_mappls_token() -> str:
     """
     Exchange Mappls credentials for an OAuth access_token.
-    Caches the token for its lifetime.
-    On failure, backs off for 60 s so keystrokes don't hammer the auth endpoint.
-    Reads MAPPLS_CLIENT_SECRET env-var if set; otherwise falls back to MAPPLS_KEY
-    as client_secret (works for some account types).
+    Uses MAPPLS_CLIENT_ID + MAPPLS_CLIENT_SECRET for OAuth.
+    Falls back to MAPPLS_KEY as client_id if CLIENT_ID not set.
+    Backs off 60 s after a failure to stop per-keystroke hammering.
     """
     import time
     c = _mappls_token_cache
@@ -1249,16 +1249,17 @@ def _get_mappls_token() -> str:
     if time.time() < c["backoff_until"]:
         raise RuntimeError("Mappls auth in backoff — skipping retry")
 
-    client_secret = _MAPPLS_SECRET or _MAPPLS_KEY   # prefer dedicated secret
-    if not _MAPPLS_KEY or not client_secret:
-        raise RuntimeError("MAPPLS_KEY not configured")
+    client_id     = _MAPPLS_CLIENT_ID or _MAPPLS_KEY   # prefer dedicated OAuth ID
+    client_secret = _MAPPLS_SECRET    or _MAPPLS_KEY   # prefer dedicated secret
+    if not client_id or not client_secret:
+        raise RuntimeError("Mappls credentials not configured")
 
     print("  🔑 Fetching new Mappls OAuth token...")
     r = _requests.post(
         "https://outpost.mappls.com/api/security/oauth/token",
         data={
             "grant_type":    "client_credentials",
-            "client_id":     _MAPPLS_KEY,
+            "client_id":     client_id,
             "client_secret": client_secret,
         },
         timeout=10,
@@ -1268,8 +1269,8 @@ def _get_mappls_token() -> str:
         raise RuntimeError(f"Mappls token {r.status_code}: {r.text[:200]}")
 
     d = r.json()
-    c["token"]      = d["access_token"]
-    c["expires_at"] = time.time() + int(d.get("expires_in", 21600)) - 300
+    c["token"]         = d["access_token"]
+    c["expires_at"]    = time.time() + int(d.get("expires_in", 21600)) - 300
     c["backoff_until"] = 0.0
     print(f"  ✅ Mappls token ok (expires_in={d.get('expires_in')}s)")
     return c["token"]

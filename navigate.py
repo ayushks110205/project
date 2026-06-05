@@ -125,17 +125,17 @@ _NETWORK_TYPE: Dict[str, str] = {
 # Shared Mappls OAuth token cache
 # =============================================================================
 
-_mappls_token_cache: dict = {"token": None, "expires_at": 0.0}
+_mappls_token_cache: dict = {"token": None, "expires_at": 0.0, "backoff_until": 0.0}
 
 
-def _get_mappls_token(mappls_key: str) -> str:
-    """Exchange static key for OAuth access_token (raw, no cache)."""
+def _get_mappls_token(client_id: str, client_secret: str) -> str:
+    """Exchange Mappls OAuth credentials for an access_token (raw, no cache)."""
     resp = _req.post(
         "https://outpost.mappls.com/api/security/oauth/token",
         data={
             "grant_type":    "client_credentials",
-            "client_id":     mappls_key,
-            "client_secret": mappls_key,
+            "client_id":     client_id,
+            "client_secret": client_secret,
         },
         timeout=10,
     )
@@ -146,18 +146,35 @@ def _get_mappls_token(mappls_key: str) -> str:
 def _get_cached_mappls_token() -> str:
     """
     Return a cached Mappls OAuth token, refreshing when it expires.
-    Tokens are valid for 6 h; we refresh at 5.8 h (21 000 s).
+    Reads MAPPLS_CLIENT_ID + MAPPLS_CLIENT_SECRET (preferred) or falls
+    back to MAPPLS_KEY for both if the dedicated vars aren’t set.
+    Backs off 60 s on auth failure to avoid hammering the endpoint.
     """
     import time
-    if (_mappls_token_cache["token"] and
-            time.time() < _mappls_token_cache["expires_at"]):
-        return _mappls_token_cache["token"]
-    key = os.environ.get("MAPPLS_KEY", "").strip()
-    if not key:
-        raise ValueError("Mappls API key not configured.")
-    token = _get_mappls_token(key)
-    _mappls_token_cache["token"]      = token
-    _mappls_token_cache["expires_at"] = time.time() + 21_000
+    c = _mappls_token_cache
+
+    if c["token"] and time.time() < c["expires_at"]:
+        return c["token"]
+
+    if time.time() < c["backoff_until"]:
+        raise ValueError("Mappls auth in backoff — skipping retry")
+
+    static_key    = os.environ.get("MAPPLS_KEY",           "").strip()
+    client_id     = os.environ.get("MAPPLS_CLIENT_ID",    "").strip() or static_key
+    client_secret = os.environ.get("MAPPLS_CLIENT_SECRET", "").strip() or static_key
+
+    if not client_id or not client_secret:
+        raise ValueError("Mappls credentials not configured.")
+
+    try:
+        token = _get_mappls_token(client_id, client_secret)
+    except Exception as exc:
+        c["backoff_until"] = time.time() + 60
+        raise ValueError(f"Mappls token fetch failed: {exc}") from exc
+
+    c["token"]         = token
+    c["expires_at"]    = time.time() + 21_000   # 5.8 h
+    c["backoff_until"] = 0.0
     print("  🔑 Mappls token refreshed")
     return token
 
@@ -177,8 +194,9 @@ def geocode(place: str) -> Tuple[float, float]:
     Raises:
         ValueError: if the place cannot be geocoded.
     """
-    # ── Guard: key must be present before anything else ──────────────────────
-    mappls_key = os.environ.get("MAPPLS_KEY", "").strip()
+    # ── Guard: at least one credential must be present ──────────────────────────
+    mappls_key = (os.environ.get("MAPPLS_CLIENT_ID",    "").strip() or
+                  os.environ.get("MAPPLS_KEY",           "").strip())
     if not mappls_key:
         raise ValueError("Mappls API key not configured.")
 
