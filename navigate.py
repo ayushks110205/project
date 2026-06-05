@@ -212,8 +212,8 @@ def geocode(place: str) -> Tuple[float, float]:
     except Exception as exc:
         raise ValueError(f"Mappls auth failed: {exc}") from exc
 
-    # ── Path 2: Place Search → eLoc → Geocode API (?eLoc=) ──────────────────
-    # Place Details returns 404 on our plan; Geocode API with eLoc param is correct
+    # ── Path 2: Place Search → address string → Geocode API ─────────────────
+    # eLoc param returns 400; pass placeName+placeAddress as address string instead
     try:
         search_resp = _req.get(
             "https://atlas.mappls.com/api/places/search/json",
@@ -225,18 +225,22 @@ def geocode(place: str) -> Tuple[float, float]:
                    search_resp.json().get("results") or [])
             print(f"  🔍 Place Search: '{place}' → {len(raw)} raw results")
             for loc in raw[:3]:
-                eloc = loc.get("eLoc") or loc.get("eloc") or ""
-                if not eloc:
+                place_name = loc.get("placeName") or loc.get("name") or ""
+                place_addr = loc.get("placeAddress") or loc.get("address") or ""
+                full_addr  = f"{place_name}, {place_addr}".strip(", ") if place_addr else place_name
+                if not full_addr:
                     continue
                 try:
                     det = _req.get(
                         "https://atlas.mappls.com/api/places/geocode",
-                        params={"eLoc": eloc, "access_token": token},
+                        params={"address": full_addr, "region": "IND", "access_token": token},
                         timeout=5,
                     )
-                    print(f"    eLoc {eloc} → {det.status_code}: {det.text[:200]}")
+                    print(f"    Geocode '{place_name}' → {det.status_code}: {det.text[:200]}")
                     if det.ok:
                         cop = det.json().get("copResults") or {}
+                        if isinstance(cop, list):
+                            cop = cop[0] if cop else {}
                         print(f"    copResults keys: {list(cop.keys())}")
                         lat_s = cop.get("latitude")  or cop.get("lat")  or ""
                         lon_s = cop.get("longitude") or cop.get("lng")  or cop.get("lon") or ""
@@ -244,12 +248,12 @@ def geocode(place: str) -> Tuple[float, float]:
                         lat_f = float(lat_s) if lat_s else 0.0
                         lon_f = float(lon_s) if lon_s else 0.0
                         if lat_f and lon_f:
-                            print(f"  📍 eLoc geocode: '{place}' → ({lat_f:.5f}, {lon_f:.5f})")
+                            print(f"  📍 Geocode (via Place Search): '{place}' → ({lat_f:.5f}, {lon_f:.5f})")
                             return (lat_f, lon_f)
                 except Exception as de:
-                    print(f"    eLoc {eloc} error: {de}")
+                    print(f"    Geocode error for '{place_name}': {de}")
     except Exception as exc:
-        print(f"  ⚠️  Place Search/eLoc geocode failed: {exc}")
+        print(f"  ⚠️  Place Search/Geocode failed: {exc}")
 
     # ── Path 3: Geocode API by address name (works for some queries) ──────────
     try:

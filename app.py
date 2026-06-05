@@ -1318,38 +1318,43 @@ async def autocomplete_proxy(q: str, state: str = ""):
     if not raw:
         return JSONResponse({"results": []})
 
-    # ── Step 2: Resolve top-3 eLocs → coords via Geocode API in parallel ─────
+    # ── Step 2: Resolve top-3 results → coords via Geocode API (address string) ───
     def _resolve(loc: dict):
-        """GET /api/places/geocode?eLoc=<eloc> → (result_dict or None)"""
-        eloc = loc.get("eLoc") or loc.get("eloc") or ""
-        if not eloc:
+        """Geocode API with placeName+placeAddress string → coordinates"""
+        place_name = loc.get("placeName") or loc.get("name") or ""
+        place_addr = loc.get("placeAddress") or loc.get("address") or ""
+        full_addr  = f"{place_name}, {place_addr}".strip(", ") if place_addr else place_name
+        if not full_addr:
             return None
         try:
             r = _requests.get(
                 "https://atlas.mappls.com/api/places/geocode",
-                params={"eLoc": eloc, "access_token": token},
+                params={"address": full_addr, "region": "IND", "access_token": token},
                 timeout=5,
             )
-            print(f"    eLoc {eloc} → {r.status_code}: {r.text[:150]}")
+            print(f"    Geocode '{place_name}' → {r.status_code}: {r.text[:150]}")
             if not r.ok:
                 return None
             cop = r.json().get("copResults") or {}
+            # copResults can be a dict or a list
+            if isinstance(cop, list):
+                cop = cop[0] if cop else {}
             lat_s = cop.get("latitude")  or cop.get("lat")  or ""
             lon_s = cop.get("longitude") or cop.get("lng")  or cop.get("lon") or ""
             lat_f = float(lat_s) if lat_s else 0.0
             lon_f = float(lon_s) if lon_s else 0.0
             if lat_f and lon_f:
                 return {
-                    "name":    loc.get("placeName")    or loc.get("name", ""),
-                    "address": loc.get("placeAddress") or loc.get("address", ""),
+                    "name":    place_name,
+                    "address": place_addr,
                     "lat": str(lat_f),
                     "lon": str(lon_f),
                 }
         except Exception as ex:
-            print(f"    eLoc {eloc} error: {ex}")
+            print(f"    Geocode error for '{place_name}': {ex}")
         return None
 
-    candidates = raw[:3]   # only top-3 to keep latency under 2 s
+    candidates = raw[:3]   # top-3 to keep latency under 2 s
     import concurrent.futures as _cf
     with _cf.ThreadPoolExecutor(max_workers=3) as ex:
         resolved = list(ex.map(_resolve, candidates))
