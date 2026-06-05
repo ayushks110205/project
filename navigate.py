@@ -122,6 +122,47 @@ _NETWORK_TYPE: Dict[str, str] = {
 
 
 # =============================================================================
+# Shared Mappls OAuth token cache
+# =============================================================================
+
+_mappls_token_cache: dict = {"token": None, "expires_at": 0.0}
+
+
+def _get_mappls_token(mappls_key: str) -> str:
+    """Exchange static key for OAuth access_token (raw, no cache)."""
+    resp = _req.post(
+        "https://outpost.mappls.com/api/security/oauth/token",
+        data={
+            "grant_type":    "client_credentials",
+            "client_id":     mappls_key,
+            "client_secret": mappls_key,
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+def _get_cached_mappls_token() -> str:
+    """
+    Return a cached Mappls OAuth token, refreshing when it expires.
+    Tokens are valid for 6 h; we refresh at 5.8 h (21 000 s).
+    """
+    import time
+    if (_mappls_token_cache["token"] and
+            time.time() < _mappls_token_cache["expires_at"]):
+        return _mappls_token_cache["token"]
+    key = os.environ.get("MAPPLS_KEY", "").strip()
+    if not key:
+        raise ValueError("Mappls API key not configured.")
+    token = _get_mappls_token(key)
+    _mappls_token_cache["token"]      = token
+    _mappls_token_cache["expires_at"] = time.time() + 21_000
+    print("  🔑 Mappls token refreshed")
+    return token
+
+
+# =============================================================================
 # Step 1 — Geocoding
 # =============================================================================
 
@@ -154,17 +195,8 @@ def geocode(place: str) -> Tuple[float, float]:
 
     # ── Mappls Geocoding REST API ─────────────────────────────────────────────
     try:
-        # Exchange static key for OAuth access_token
-        tok_resp = _req.post(
-            "https://outpost.mappls.com/api/security/oauth/token",
-            data={"grant_type": "client_credentials",
-                  "client_id": mappls_key,
-                  "client_secret": mappls_key},
-            timeout=10,
-        )
-        if not tok_resp.ok:
-            raise ValueError(f"Mappls auth failed {tok_resp.status_code}: {tok_resp.text[:100]}")
-        access_token = tok_resp.json()["access_token"]
+        # Use shared cached token (avoids per-geocode token exchange)
+        access_token = _get_cached_mappls_token()
 
         resp = _req.get(
             "https://atlas.mappls.com/api/places/geocode",
@@ -524,21 +556,126 @@ def compute_route(G, orig_node, dest_node, weight_key: str):
         return None
 
 
+
+# =============================================================================
+# Step 7 — Fetch traffic multipliers from Mappls
+# =============================================================================
+
+_TRAFFIC_MAP: Dict[str, float] = {
+    "free_flow":  1.0,
+    "normal":     1.0,
+    "light":      1.2,
+    "moderate":   1.5,
+    "heavy":      2.0,
+    "severe":     2.5,
+    "standstill": 2.5,
+}
+
+
+def fetch_traffic_multipliers(
+        polyline: List[Tuple[float, float]],
+        vehicle:  str,
+) -> List[float]:
+    """
+    Query the Mappls live traffic flow API for a route polyline.
+
+    Samples the polyline to ≤20 points, then maps congestion labels
+    to time multipliers.  Always returns a list of floats ≥1.0.
+    Returns ``[1.0]`` on any failure (never crashes the route).
+    """
+    # Pedestrians are unaffected by vehicle traffic congestion
+    if vehicle == 'pedestrian' or not polyline:
+        return [1.0]
+
+    key = os.environ.get("MAPPLS_KEY", "").strip()
+    if not key:
+        return [1.0]
+
+    try:
+        token = _get_cached_mappls_token()
+
+        # Sample ≤20 waypoints to stay within API limits
+        N       = max(1, len(polyline) // 20)
+        sampled = polyline[::N]
+        path    = "|".join(f"{lat},{lng}" for lat, lng in sampled)
+
+        resp = _req.get(
+            "https://atlas.mappls.com/api/live_traffic/flow",
+            params={"path": path, "access_token": token},
+            timeout=8,
+        )
+
+        if not resp.ok:
+            print(f"  ⚠️  Traffic API {resp.status_code} — using no-traffic multipliers")
+            return [1.0]
+
+        data = resp.json()
+
+        # Parse whichever response shape Mappls returns
+        segments = (
+            data.get("traffic_data")
+            or data.get("segments")
+            or data.get("results")
+            or []
+        )
+
+        if not segments:
+            # Maybe top-level has a single condition key
+            cond = (
+                data.get("traffic_condition")
+                or data.get("congestion")
+                or data.get("status")
+                or ""
+            ).lower()
+            m = _TRAFFIC_MAP.get(cond, 1.0)
+            print(f"  🚦 Traffic: single condition='{cond}' → {m}x")
+            return [m]
+
+        mults = []
+        for seg in segments:
+            cond = (
+                seg.get("traffic_condition")
+                or seg.get("congestion")
+                or seg.get("status")
+                or seg.get("flow")
+                or ""
+            ).lower()
+            mults.append(_TRAFFIC_MAP.get(cond, 1.0))
+
+        avg = sum(mults) / len(mults) if mults else 1.0
+        print(f"  🚦 Traffic: {len(mults)} segments, avg_mult={avg:.2f}")
+        return mults if mults else [1.0]
+
+    except Exception as exc:
+        print(f"  ⚠️  Traffic fetch failed ({exc}) — continuing without traffic data")
+        return [1.0]
+
+
 # =============================================================================
 # Step 8 — Build route response
 # =============================================================================
 
-def build_route_info(G, node_path: List[int], vehicle: str) -> dict:
+def build_route_info(
+        G,
+        node_path: List[int],
+        vehicle:   str,
+        traffic_mults: Optional[List[float]] = None,
+) -> dict:
     """
     Walk *node_path* and assemble distance, time, polyline, segments,
-    and damage warnings.
+    damage warnings, and traffic status.
+
+    *traffic_mults* is a list of per-segment time multipliers produced by
+    :func:`fetch_traffic_multipliers`.  Pass ``None`` to have this function
+    call it internally (used when traffic data isn’t pre-fetched).
     """
     total_dist_m = 0.0
     total_time_s = 0.0
+    base_time_s  = 0.0          # time without traffic, for delay calc
     good_m       = 0.0
     unpaved_m    = 0.0
     damaged_m    = 0.0
-    
+
     # Track damage per road name to aggregate warnings
     damage_by_road: Dict[str, float] = {}
     polyline:  List[List[float]] = []
@@ -552,7 +689,7 @@ def build_route_info(G, node_path: List[int], vehicle: str) -> dict:
         data     = edges[best_key]
         length_m = _edge_length(data)
 
-        # ── Polyline (include full geometry) ──────────────────────────────────
+        # ── Polyline (include full geometry) ───────────────────────────────────
         if 'geometry' in data:
             coords = list(data['geometry'].coords)    # [(lon, lat), ...]
             # Orient from u → v
@@ -570,13 +707,18 @@ def build_route_info(G, node_path: List[int], vehicle: str) -> dict:
                 polyline.append([G.nodes[u]['y'], G.nodes[u]['x']])
             polyline.append([G.nodes[v]['y'], G.nodes[v]['x']])
 
-        # ── Accumulate stats ──────────────────────────────────────────────────
+        # ── Accumulate stats ──────────────────────────────────────────────────────
         total_dist_m += length_m
 
         speed_kmh = _edge_speed_kmh(data, vehicle)
         speed_ms  = speed_kmh / 3.6
         if speed_ms > 0:
-            total_time_s += length_m / speed_ms
+            edge_base = length_m / speed_ms
+            base_time_s += edge_base
+            # Traffic multiplier mapped proportionally across mults list
+            # (applied after polyline is built, so we use edge index i)
+            # We defer the actual mult lookup until mults are available.
+            total_time_s += edge_base   # placeholder; corrected below
 
         surface = data.get('ml_surface', 'unpaved')
         if surface == 'paved':
@@ -598,9 +740,46 @@ def build_route_info(G, node_path: List[int], vehicle: str) -> dict:
         nd = G.nodes[node_path[0]]
         polyline.append([nd['y'], nd['x']])
 
-    # ── Format warnings ───────────────────────────────────────────────────────
+    # ── Fetch / apply traffic multipliers ───────────────────────────────────────
+    if traffic_mults is None:
+        traffic_mults = fetch_traffic_multipliers(
+            [(pt[0], pt[1]) for pt in polyline], vehicle
+        )
+
+    # Re-apply edge times with traffic multipliers
+    n_edges = max(len(node_path) - 1, 1)
+    total_time_s = 0.0
+    for i, (u, v) in enumerate(zip(node_path[:-1], node_path[1:])):
+        if not G.has_edge(u, v):
+            continue
+        edges    = G[u][v]
+        best_key = min(edges, key=lambda k: edges[k].get('length', float('inf')))
+        data     = edges[best_key]
+        length_m = _edge_length(data)
+        speed_kmh = _edge_speed_kmh(data, vehicle)
+        speed_ms  = speed_kmh / 3.6
+        if speed_ms > 0:
+            edge_base = length_m / speed_ms
+            t_idx = int(i / n_edges * len(traffic_mults))
+            t_idx = min(t_idx, len(traffic_mults) - 1)
+            total_time_s += edge_base * traffic_mults[t_idx]
+
+    # ── Traffic summary ────────────────────────────────────────────────────────────
+    avg_mult = (sum(traffic_mults) / len(traffic_mults)) if traffic_mults else 1.0
+    if avg_mult <= 1.1:
+        traffic_status = "free_flow"
+    elif avg_mult <= 1.3:
+        traffic_status = "light"
+    elif avg_mult <= 1.7:
+        traffic_status = "moderate"
+    elif avg_mult <= 2.1:
+        traffic_status = "heavy"
+    else:
+        traffic_status = "severe"
+    traffic_delay_minutes = round((total_time_s - base_time_s) / 60)
+
+    # ── Format warnings ──────────────────────────────────────────────────────────────
     warnings: List[str] = []
-    # Sort by longest damaged stretch first
     for name, length in sorted(damage_by_road.items(), key=lambda x: x[1], reverse=True):
         if length >= 1000:
             dist_str = f"{length/1000:.1f} km"
@@ -608,12 +787,9 @@ def build_route_info(G, node_path: List[int], vehicle: str) -> dict:
             dist_str = f"{int(length)} m"
         warnings.append(f"Damaged surface on {name} (~{dist_str} total)")
 
-    # ── Count road segments and junctions ────────────────────────────────────
+    # ── Count road segments and junctions ───────────────────────────────────
     road_count     = len(node_path) - 1 if len(node_path) > 1 else 0
-    junction_count = sum(
-        1 for n in node_path[1:-1]
-        if G.degree(n) > 2
-    )
+    junction_count = sum(1 for n in node_path[1:-1] if G.degree(n) > 2)
 
     # ── Time rounding: 1 dp below 10 min, integer above ───────────────────────
     raw_min = total_time_s / 60
@@ -755,16 +931,40 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
     if safest_path is None:
         safest_path = fastest_path
 
-    # ── 11. Build response ────────────────────────────────────────────────────
-    fastest_info = build_route_info(G, fastest_path, vehicle)
-    safest_info  = build_route_info(G, safest_path,  vehicle)
+    # ── 11. Traffic fetch for both routes in parallel ─────────────────────────
+    def _get_polyline_pts(path):
+        """Quick polyline extraction for traffic sampling (node coords only)."""
+        pts = []
+        for n in path:
+            nd = G.nodes[n]
+            pts.append((nd['y'], nd['x']))
+        return pts
+
+    print("  🚦 Fetching traffic data for both routes in parallel...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as _tpool:
+        _ft_fast = _tpool.submit(
+            fetch_traffic_multipliers,
+            _get_polyline_pts(fastest_path), vehicle
+        )
+        _ft_safe = _tpool.submit(
+            fetch_traffic_multipliers,
+            _get_polyline_pts(safest_path), vehicle
+        )
+        fast_traffic = _ft_fast.result()
+        safe_traffic = _ft_safe.result()
+
+    # ── 12. Build response (traffic already fetched) ──────────────────────────
+    fastest_info = build_route_info(G, fastest_path, vehicle, traffic_mults=fast_traffic)
+    safest_info  = build_route_info(G, safest_path,  vehicle, traffic_mults=safe_traffic)
 
     print(f"  ✅ Fastest: {fastest_info['distance_km']} km, "
-          f"{fastest_info['estimated_minutes']} min, "
+          f"{fastest_info['estimated_minutes']} min "
+          f"[{fastest_info['traffic_status']}], "
           f"{fastest_info['road_count']} segs, "
           f"{fastest_info['junction_count']} junctions")
     print(f"  ✅ Safest:  {safest_info['distance_km']} km, "
-          f"{safest_info['estimated_minutes']} min")
+          f"{safest_info['estimated_minutes']} min "
+          f"[{safest_info['traffic_status']}]")
 
     result = {
         'fastest':            fastest_info,
