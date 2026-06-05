@@ -212,7 +212,7 @@ def geocode(place: str) -> Tuple[float, float]:
     except Exception as exc:
         raise ValueError(f"Mappls auth failed: {exc}") from exc
 
-    # ── Path 2: Place Search → eLoc → Place Details ──────────────────────────
+    # ── Path 2: Place Search → direct coords or eLoc → Place Details ─────────
     try:
         search_resp = _req.get(
             "https://atlas.mappls.com/api/places/search/json",
@@ -222,8 +222,8 @@ def geocode(place: str) -> Tuple[float, float]:
         if search_resp.ok:
             raw = (search_resp.json().get("suggestedLocations") or
                    search_resp.json().get("results") or [])
+            print(f"  🔍 Place Search: '{place}' → {len(raw)} raw results")
             for loc in raw[:5]:
-                # Try direct coords first
                 try:
                     lat_f = float(loc.get("latitude")  or loc.get("lat") or 0)
                     lon_f = float(loc.get("longitude") or loc.get("lng") or
@@ -231,7 +231,6 @@ def geocode(place: str) -> Tuple[float, float]:
                 except (TypeError, ValueError):
                     lat_f = lon_f = 0.0
 
-                # If missing, resolve via eLoc
                 if not lat_f or not lon_f:
                     eloc = loc.get("eLoc") or loc.get("eloc") or ""
                     if eloc:
@@ -242,15 +241,17 @@ def geocode(place: str) -> Tuple[float, float]:
                                     params={pid_key: eloc, "access_token": token},
                                     timeout=5,
                                 )
+                                print(f"    eLoc {eloc} [{pid_key}] → {det.status_code}: {det.text[:200]}")
                                 if det.ok:
                                     pl = (det.json().get("place") or
-                                          det.json().get("result") or det.json())
+                                          det.json().get("result") or
+                                          det.json().get("pageInfo") or det.json())
                                     lat_f = float(pl.get("latitude")  or pl.get("lat") or 0)
                                     lon_f = float(pl.get("longitude") or pl.get("lng") or 0)
                                     if lat_f and lon_f:
                                         break
-                            except Exception:
-                                pass
+                            except Exception as de:
+                                print(f"    eLoc error: {de}")
 
                 if lat_f and lon_f:
                     print(f"  📍 Place Search geocode: '{place}' → ({lat_f:.5f}, {lon_f:.5f})")
@@ -258,13 +259,14 @@ def geocode(place: str) -> Tuple[float, float]:
     except Exception as exc:
         print(f"  ⚠️  Place Search geocode failed: {exc}")
 
-    # ── Path 3: Mappls Geocoding API (address-style fallback) ─────────────────
+    # ── Path 3: Mappls Geocoding API ──────────────────────────────────────────
     try:
         resp = _req.get(
             "https://atlas.mappls.com/api/places/geocode",
             params={"address": place, "region": "IND", "access_token": token},
             timeout=10,
         )
+        print(f"  🔍 Geocode API: {resp.status_code} → {resp.text[:200]}")
         if resp.ok:
             data = resp.json()
             cop = data.get("copResults") or {}
@@ -279,6 +281,22 @@ def geocode(place: str) -> Tuple[float, float]:
                     return (lat, lon)
     except Exception as exc:
         print(f"  ⚠️  Geocoding API failed: {exc}")
+
+    # ── Path 4: Nominatim (silent backend fallback — invisible to user) ────────
+    try:
+        nom = _req.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": f"{place}, India", "format": "json", "limit": "1"},
+            headers={"User-Agent": "RoadSense/2.0"},
+            timeout=6,
+        )
+        if nom.ok and nom.json():
+            hit = nom.json()[0]
+            lat, lon = float(hit["lat"]), float(hit["lon"])
+            print(f"  📍 Nominatim fallback: '{place}' → ({lat:.5f}, {lon:.5f})")
+            return (lat, lon)
+    except Exception as exc:
+        print(f"  ⚠️  Nominatim fallback failed: {exc}")
 
     raise ValueError(f"Could not locate: {place}")
 
