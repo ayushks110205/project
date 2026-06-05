@@ -1318,43 +1318,68 @@ async def autocomplete_proxy(q: str, state: str = ""):
     if not raw:
         return JSONResponse({"results": []})
 
-    # ── Step 2: Resolve top-3 results → coords via Geocode API (address string) ───
+    # ── Step 2: Resolve top-3 results → coords ───────────────────────────────
     def _resolve(loc: dict):
-        """Geocode API with placeName+placeAddress string → coordinates"""
+        """
+        Try Mappls Geocode API first (address string).
+        If copResults empty → fall back to Nominatim for coordinates.
+        Suggestions still come from Mappls (names, addresses) — only coords differ.
+        """
         place_name = loc.get("placeName") or loc.get("name") or ""
         place_addr = loc.get("placeAddress") or loc.get("address") or ""
         full_addr  = f"{place_name}, {place_addr}".strip(", ") if place_addr else place_name
         if not full_addr:
             return None
+
+        lat_f = lon_f = 0.0
+
+        # Path A: Mappls Geocode API (works for precise addresses)
         try:
             r = _requests.get(
                 "https://atlas.mappls.com/api/places/geocode",
                 params={"address": full_addr, "region": "IND", "access_token": token},
                 timeout=5,
             )
-            print(f"    Geocode '{place_name}' → {r.status_code}: {r.text[:150]}")
-            if not r.ok:
-                return None
-            cop = r.json().get("copResults") or {}
-            # copResults can be a dict or a list
-            if isinstance(cop, list):
-                cop = cop[0] if cop else {}
-            lat_s = cop.get("latitude")  or cop.get("lat")  or ""
-            lon_s = cop.get("longitude") or cop.get("lng")  or cop.get("lon") or ""
-            lat_f = float(lat_s) if lat_s else 0.0
-            lon_f = float(lon_s) if lon_s else 0.0
-            if lat_f and lon_f:
-                return {
-                    "name":    place_name,
-                    "address": place_addr,
-                    "lat": str(lat_f),
-                    "lon": str(lon_f),
-                }
+            if r.ok:
+                cop = r.json().get("copResults") or {}
+                if isinstance(cop, list):
+                    cop = cop[0] if cop else {}
+                lat_s = cop.get("latitude")  or cop.get("lat")  or ""
+                lon_s = cop.get("longitude") or cop.get("lng")  or cop.get("lon") or ""
+                lat_f = float(lat_s) if lat_s else 0.0
+                lon_f = float(lon_s) if lon_s else 0.0
+                print(f"    Mappls Geocode '{place_name}' → lat={lat_s!r}, lon={lon_s!r}")
         except Exception as ex:
-            print(f"    Geocode error for '{place_name}': {ex}")
+            print(f"    Mappls Geocode error '{place_name}': {ex}")
+
+        # Path B: Nominatim fallback (coordinates only — name/address still from Mappls)
+        if not lat_f or not lon_f:
+            try:
+                nom_q = f"{place_name}, India"
+                nom = _requests.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={"q": nom_q, "format": "json", "limit": "1"},
+                    headers={"User-Agent": "RoadSense/2.0"},
+                    timeout=4,
+                )
+                if nom.ok and nom.json():
+                    hit = nom.json()[0]
+                    lat_f = float(hit.get("lat", 0))
+                    lon_f = float(hit.get("lon", 0))
+                    print(f"    Nominatim fallback '{place_name}' → ({lat_f:.5f}, {lon_f:.5f})")
+            except Exception as ex:
+                print(f"    Nominatim error '{place_name}': {ex}")
+
+        if lat_f and lon_f:
+            return {
+                "name":    place_name,
+                "address": place_addr,
+                "lat": str(lat_f),
+                "lon": str(lon_f),
+            }
         return None
 
-    candidates = raw[:3]   # top-3 to keep latency under 2 s
+    candidates = raw[:3]
     import concurrent.futures as _cf
     with _cf.ThreadPoolExecutor(max_workers=3) as ex:
         resolved = list(ex.map(_resolve, candidates))
