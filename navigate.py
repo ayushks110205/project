@@ -608,16 +608,32 @@ def build_route_info(G, node_path: List[int], vehicle: str) -> dict:
             dist_str = f"{int(length)} m"
         warnings.append(f"Damaged surface on {name} (~{dist_str} total)")
 
+    # ── Count road segments and junctions ────────────────────────────────────
+    road_count     = len(node_path) - 1 if len(node_path) > 1 else 0
+    junction_count = sum(
+        1 for n in node_path[1:-1]
+        if G.degree(n) > 2
+    )
+
+    # ── Time rounding: 1 dp below 10 min, integer above ───────────────────────
+    raw_min = total_time_s / 60
+    if raw_min < 10:
+        est_min = round(raw_min, 1)
+    else:
+        est_min = round(raw_min)
+
     return {
         'distance_km':       round(total_dist_m / 1000, 1),
-        'estimated_minutes': round(total_time_s / 60),
+        'estimated_minutes': est_min,
         'polyline':          polyline,
         'segments': {
             'good_km':    round(good_m / 1000, 2),
             'unpaved_km': round(unpaved_m / 1000, 2),
             'damaged_km': round(damaged_m / 1000, 2),
         },
-        'warnings': warnings,
+        'warnings':      warnings,
+        'road_count':    road_count,
+        'junction_count': junction_count,
     }
 
 
@@ -626,6 +642,9 @@ def build_route_info(G, node_path: List[int], vehicle: str) -> dict:
 # =============================================================================
 
 _IMPASSABLE_COST = 1_000_000.0   # 1 000 km equivalent
+
+# Full-result cache: (origin, dest, vehicle) → response dict
+_navigate_cache: dict = {}
 
 def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
     """
@@ -655,7 +674,13 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
     print(f"  📍 Origin : {origin_ll}")
     print(f"  📍 Dest   : {dest_ll}")
 
-    # ── 2. Distance guard (fix 2) ─────────────────────────────────────────────
+    # ── Result cache ───────────────────────────────────────────────────────────────────
+    cache_key = f"{origin_ll}|{dest_ll}|{vehicle}"
+    if cache_key in _navigate_cache:
+        print("  ⚡ Returning cached result")
+        return _navigate_cache[cache_key]
+
+    # ── 2. Distance guard ───────────────────────────────────────────────────────────────────
     dist_km = _haversine_km(origin_ll[0], origin_ll[1],
                             dest_ll[0],   dest_ll[1])
     print(f"  📏 Straight-line: {dist_km:.1f} km")
@@ -663,13 +688,18 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
         raise ValueError(
             "Route too long — keep both points within 50 km of each other.")
 
-    # ── 3. osmnx road graph ───────────────────────────────────────────────────
-    G, bbox = build_road_graph(origin_ll, dest_ll, vehicle)
-    print(f"  🗺️  Graph: {G.number_of_nodes()} nodes, "
-          f"{G.number_of_edges()} edges")
+    # ── 3 + 4. Parallel: osmnx graph download  +  Sentinel-2 ─────────────────
+    # build_road_graph is LRU-cached so it's fast on repeat calls.
+    # fetch_satellite is GEE I/O — fire it in a thread to overlap with graph.
+    print("  ⏳ Fetching OSM graph + Sentinel-2 in parallel...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as _pool:
+        _fut_graph     = _pool.submit(build_road_graph, origin_ll, dest_ll, vehicle)
+        G, bbox        = _fut_graph.result()          # wait for bbox first
+        _fut_sat       = _pool.submit(fetch_satellite, bbox)   # then fire GEE
+        rgb, ml_active = _fut_sat.result()
 
-    # ── 4. Sentinel-2 imagery ─────────────────────────────────────────────────
-    rgb, ml_active = fetch_satellite(bbox)
+    print(f"  🗺️  Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+
 
     # ── 5. OSM raster mask for ML ─────────────────────────────────────────────
     north, south, east, west = bbox
@@ -727,17 +757,25 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
 
     # ── 11. Build response ────────────────────────────────────────────────────
     fastest_info = build_route_info(G, fastest_path, vehicle)
-    safest_info  = build_route_info(G, safest_path, vehicle)
+    safest_info  = build_route_info(G, safest_path,  vehicle)
 
     print(f"  ✅ Fastest: {fastest_info['distance_km']} km, "
-          f"{fastest_info['estimated_minutes']} min")
+          f"{fastest_info['estimated_minutes']} min, "
+          f"{fastest_info['road_count']} segs, "
+          f"{fastest_info['junction_count']} junctions")
     print(f"  ✅ Safest:  {safest_info['distance_km']} km, "
           f"{safest_info['estimated_minutes']} min")
 
-    return {
+    result = {
         'fastest':            fastest_info,
         'safest':             safest_info,
         'origin_coords':      list(origin_ll),
         'destination_coords': list(dest_ll),
         'ml_active':          ml_active,
+        'graph_stats': {
+            'nodes': G.number_of_nodes(),
+            'edges': G.number_of_edges(),
+        },
     }
+    _navigate_cache[cache_key] = result
+    return result
