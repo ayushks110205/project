@@ -1352,23 +1352,42 @@ async def autocomplete_proxy(q: str, state: str = ""):
         except Exception as ex:
             print(f"    Mappls Geocode error '{place_name}': {ex}")
 
-        # Path B: Nominatim fallback (coordinates only — name/address still from Mappls)
-        if not lat_f or not lon_f:
+        # Path B: External geocoder cascade for coords (name/address still from Mappls)
+        def _ext_geocode(name: str) -> tuple:
+            # B1: Nominatim
             try:
-                nom_q = f"{place_name}, India"
-                nom = _requests.get(
+                r2 = _requests.get(
                     "https://nominatim.openstreetmap.org/search",
-                    params={"q": nom_q, "format": "json", "limit": "1"},
-                    headers={"User-Agent": "RoadSense/2.0"},
-                    timeout=4,
+                    params={"q": f"{name}, India", "format": "json",
+                            "countrycodes": "in", "limit": "1"},
+                    headers={"User-Agent": "RoadSense/2.0 (+huggingface.co)"},
+                    timeout=10,
                 )
-                if nom.ok and nom.json():
-                    hit = nom.json()[0]
-                    lat_f = float(hit.get("lat", 0))
-                    lon_f = float(hit.get("lon", 0))
-                    print(f"    Nominatim fallback '{place_name}' → ({lat_f:.5f}, {lon_f:.5f})")
+                print(f"    Nominatim '{name}' → {r2.status_code}: {r2.text[:120]}")
+                if r2.ok and r2.json():
+                    h = r2.json()[0]
+                    return float(h["lat"]), float(h["lon"])
             except Exception as ex:
-                print(f"    Nominatim error '{place_name}': {ex}")
+                print(f"    Nominatim error: {ex}")
+            # B2: Photon
+            try:
+                r3 = _requests.get(
+                    "https://photon.komoot.io/api/",
+                    params={"q": f"{name}, India", "limit": "1", "lang": "en"},
+                    timeout=10,
+                )
+                print(f"    Photon '{name}' → {r3.status_code}: {r3.text[:120]}")
+                if r3.ok:
+                    feats = r3.json().get("features", [])
+                    if feats:
+                        c = feats[0]["geometry"]["coordinates"]
+                        return float(c[1]), float(c[0])
+            except Exception as ex:
+                print(f"    Photon error: {ex}")
+            return 0.0, 0.0
+
+        if not lat_f or not lon_f:
+            lat_f, lon_f = _ext_geocode(place_name)
 
         if lat_f and lon_f:
             return {

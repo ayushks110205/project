@@ -278,21 +278,67 @@ def geocode(place: str) -> Tuple[float, float]:
     except Exception as exc:
         print(f"  ⚠️  Geocoding API failed: {exc}")
 
-    # ── Path 4: Nominatim (silent backend fallback — invisible to user) ────────
+    # ── Path 4: External geocoders cascade (Nominatim → Photon → Geoapify) ────
+    # Try each in order; all are free, different infra, different rate limits
+
+    # 4a: Nominatim (OSM)
     try:
+        print(f"  🌐 Nominatim: '{place}, India'")
         nom = _req.get(
             "https://nominatim.openstreetmap.org/search",
-            params={"q": f"{place}, India", "format": "json", "limit": "1"},
-            headers={"User-Agent": "RoadSense/2.0"},
-            timeout=6,
+            params={"q": f"{place}, India", "format": "json",
+                    "countrycodes": "in", "limit": "1"},
+            headers={"User-Agent": "RoadSense/2.0 (+huggingface.co)"},
+            timeout=10,
         )
+        print(f"    status={nom.status_code}, body={nom.text[:200]}")
         if nom.ok and nom.json():
             hit = nom.json()[0]
             lat, lon = float(hit["lat"]), float(hit["lon"])
-            print(f"  📍 Nominatim fallback: '{place}' → ({lat:.5f}, {lon:.5f})")
+            print(f"  📍 Nominatim: '{place}' → ({lat:.5f}, {lon:.5f})")
             return (lat, lon)
     except Exception as exc:
-        print(f"  ⚠️  Nominatim fallback failed: {exc}")
+        print(f"  ⚠️  Nominatim failed: {exc}")
+
+    # 4b: Photon (komoot) — different OSM mirror, no rate-limit header
+    try:
+        print(f"  🌐 Photon: '{place}'")
+        ph = _req.get(
+            "https://photon.komoot.io/api/",
+            params={"q": f"{place}, India", "limit": "1", "lang": "en"},
+            timeout=10,
+        )
+        print(f"    status={ph.status_code}, body={ph.text[:200]}")
+        if ph.ok:
+            features = ph.json().get("features", [])
+            if features:
+                coords = features[0]["geometry"]["coordinates"]
+                lat, lon = float(coords[1]), float(coords[0])
+                print(f"  📍 Photon: '{place}' → ({lat:.5f}, {lon:.5f})")
+                return (lat, lon)
+    except Exception as exc:
+        print(f"  ⚠️  Photon failed: {exc}")
+
+    # 4c: Geoapify free geocoding (no key needed for /v1/geocode/search)
+    try:
+        print(f"  🌐 Geoapify: '{place}'")
+        geo = _req.get(
+            "https://api.geoapify.com/v1/geocode/search",
+            params={"text": f"{place}, India", "filter": "countrycode:in",
+                    "format": "json", "apiKey": "open"},
+            timeout=10,
+        )
+        print(f"    status={geo.status_code}, body={geo.text[:200]}")
+        if geo.ok:
+            results = geo.json().get("results", [])
+            if results:
+                lat = float(results[0].get("lat", 0))
+                lon = float(results[0].get("lon", 0))
+                if lat and lon:
+                    print(f"  📍 Geoapify: '{place}' → ({lat:.5f}, {lon:.5f})")
+                    return (lat, lon)
+    except Exception as exc:
+        print(f"  ⚠️  Geoapify failed: {exc}")
 
     raise ValueError(f"Could not locate: {place}")
 
