@@ -1279,13 +1279,38 @@ def _get_mappls_token() -> str:
 @app.get('/autocomplete', tags=['Navigation'], include_in_schema=False)
 async def autocomplete_proxy(q: str, state: str = ""):
     """
-    Mappls-only autocomplete proxy.
-      1. rest_key param  — works when CORS is enabled in Mappls console
-      2. OAuth token     — fallback if rest_key is rejected
+    Mappls autocomplete — OAuth only (rest_key rejected by this endpoint).
+    Tries Place Search first; each result uses direct lat/lon if available,
+    or fetches coords via Place Details (eLoc) as a fallback.
     Returns: {"results": [{name, address, lat, lon}]}
     """
-    if not _MAPPLS_KEY:
-        return JSONResponse({"results": [], "error": "MAPPLS_KEY not configured"})
+    if not (_MAPPLS_CLIENT_ID or _MAPPLS_KEY):
+        return JSONResponse({"results": [], "error": "Mappls credentials not configured"})
+
+    try:
+        token = _get_mappls_token()
+    except Exception as e:
+        return JSONResponse({"results": [], "error": str(e)})
+
+    def _eloc_to_coords(eloc: str) -> tuple:
+        """Resolve an eLoc code to (lat, lon) via Place Details API."""
+        for place_id_key in ("place_id", "eLoc"):
+            try:
+                r = _requests.get(
+                    "https://atlas.mappls.com/api/places/place-details/json",
+                    params={place_id_key: eloc, "access_token": token},
+                    timeout=5,
+                )
+                if r.ok:
+                    d = r.json()
+                    pl = d.get("place") or d.get("result") or d
+                    lat = float(pl.get("latitude")  or pl.get("lat") or 0)
+                    lon = float(pl.get("longitude") or pl.get("lng") or 0)
+                    if lat and lon:
+                        return lat, lon
+            except Exception:
+                pass
+        return 0.0, 0.0
 
     def _parse(resp) -> list:
         if not resp.ok:
@@ -1293,61 +1318,55 @@ async def autocomplete_proxy(q: str, state: str = ""):
             return []
         data = resp.json()
         raw  = data.get("suggestedLocations") or data.get("results") or []
-        print(f"    Mappls OK — count={len(raw)}")
-        out  = []
+        if not raw:
+            return []
+        # Log first result structure once for debugging
+        print(f"    raw={len(raw)}, keys={list(raw[0].keys())}")
+
+        out = []
         for loc in raw[:6]:
-            lat = loc.get("latitude") or loc.get("lat") or ""
-            lon = loc.get("longitude") or loc.get("lng") or loc.get("lon") or ""
-            if not lat or not lon:
+            # Mappls Place Search may or may not include direct coords
+            try:
+                lat_f = float(loc.get("latitude")  or loc.get("lat") or 0)
+                lon_f = float(loc.get("longitude") or loc.get("lng") or
+                              loc.get("lon") or 0)
+            except (ValueError, TypeError):
+                lat_f = lon_f = 0.0
+
+            # If missing — resolve via eLoc → Place Details
+            if not lat_f or not lon_f:
+                eloc = loc.get("eLoc") or loc.get("eloc") or ""
+                if eloc:
+                    lat_f, lon_f = _eloc_to_coords(eloc)
+
+            if not lat_f or not lon_f:
                 continue
+
             out.append({
                 "name":    loc.get("placeName")    or loc.get("name", ""),
                 "address": loc.get("placeAddress") or loc.get("address", ""),
-                "lat": str(lat), "lon": str(lon),
+                "lat": str(lat_f),
+                "lon": str(lon_f),
             })
+
+        print(f"    parsed_with_coords={len(out)}")
         return out
 
-    def _search(params: dict) -> list:
-        """Try with state-scoped query first, then bare query."""
-        full = dict(params)
-        full["query"] = f"{q}, {state}" if state else q
+    def _place_search(query: str) -> list:
         r = _requests.get(
             "https://atlas.mappls.com/api/places/search/json",
-            params=full, timeout=6,
+            params={"query": query, "access_token": token},
+            timeout=6,
         )
-        results = _parse(r)
-        if not results and state:
-            bare = dict(params)
-            bare["query"] = q
-            r2 = _requests.get(
-                "https://atlas.mappls.com/api/places/search/json",
-                params=bare, timeout=6,
-            )
-            results = _parse(r2)
-        return results
+        return _parse(r)
 
-    # ── Tier 1: rest_key (direct — works when CORS is enabled in Mappls console)
-    try:
-        print(f"  🔑 Mappls rest_key: '{q}'")
-        results = _search({"rest_key": _MAPPLS_KEY})
-        if results:
-            return JSONResponse({"results": results})
-        # If status was non-OK, we already printed it; fall through to OAuth
-    except Exception as e1:
-        print(f"    rest_key error: {e1}")
+    # Try state-scoped first, then bare
+    results = _place_search(f"{q}, {state}" if state else q)
+    if not results and state:
+        results = _place_search(q)
 
-    # ── Tier 2: OAuth token (client_credentials)
-    try:
-        print("  🔑 Mappls OAuth token...")
-        token   = _get_mappls_token()
-        results = _search({"access_token": token})
-        if results:
-            return JSONResponse({"results": results})
-    except Exception as e2:
-        print(f"    OAuth error: {e2}")
-        return JSONResponse({"results": [], "error": str(e2)})
+    return JSONResponse({"results": results})
 
-    return JSONResponse({"results": []})
 
 
 @app.get('/navigate-ui', tags=['Navigation'], include_in_schema=False)
