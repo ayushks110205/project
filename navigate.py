@@ -187,19 +187,14 @@ def geocode(place: str) -> Tuple[float, float]:
     """
     Convert a place name or ``'lat,lng'`` string to ``(lat, lng)`` floats.
 
-    Tries raw coordinate parsing first (fast path — always used when the
-    frontend autocomplete has cached coordinates).  Falls back to the
-    Mappls Geocoding REST API for plain text queries.
+    Priority:
+      1. Raw ``'lat,lng'`` string  — fast path (always used after autocomplete)
+      2. Mappls Place Search → eLoc → Place Details  — works for POI names
+      3. Mappls Geocoding API  — fallback for address-style queries
 
     Raises:
         ValueError: if the place cannot be geocoded.
     """
-    # ── Guard: at least one credential must be present ──────────────────────────
-    mappls_key = (os.environ.get("MAPPLS_CLIENT_ID",    "").strip() or
-                  os.environ.get("MAPPLS_KEY",           "").strip())
-    if not mappls_key:
-        raise ValueError("Mappls API key not configured.")
-
     # ── Fast path: raw "lat,lng" string (sent by frontend after autocomplete) ──
     parts = place.strip().split(',')
     if len(parts) == 2:
@@ -211,41 +206,82 @@ def geocode(place: str) -> Tuple[float, float]:
         except ValueError:
             pass
 
-    # ── Mappls Geocoding REST API ─────────────────────────────────────────────
+    # ── Get OAuth token (shared cache) ───────────────────────────────────────
     try:
-        # Use shared cached token (avoids per-geocode token exchange)
-        access_token = _get_cached_mappls_token()
+        token = _get_cached_mappls_token()
+    except Exception as exc:
+        raise ValueError(f"Mappls auth failed: {exc}") from exc
 
+    # ── Path 2: Place Search → eLoc → Place Details ──────────────────────────
+    try:
+        search_resp = _req.get(
+            "https://atlas.mappls.com/api/places/search/json",
+            params={"query": place, "access_token": token},
+            timeout=8,
+        )
+        if search_resp.ok:
+            raw = (search_resp.json().get("suggestedLocations") or
+                   search_resp.json().get("results") or [])
+            for loc in raw[:5]:
+                # Try direct coords first
+                try:
+                    lat_f = float(loc.get("latitude")  or loc.get("lat") or 0)
+                    lon_f = float(loc.get("longitude") or loc.get("lng") or
+                                  loc.get("lon") or 0)
+                except (TypeError, ValueError):
+                    lat_f = lon_f = 0.0
+
+                # If missing, resolve via eLoc
+                if not lat_f or not lon_f:
+                    eloc = loc.get("eLoc") or loc.get("eloc") or ""
+                    if eloc:
+                        for pid_key in ("place_id", "eLoc"):
+                            try:
+                                det = _req.get(
+                                    "https://atlas.mappls.com/api/places/place-details/json",
+                                    params={pid_key: eloc, "access_token": token},
+                                    timeout=5,
+                                )
+                                if det.ok:
+                                    pl = (det.json().get("place") or
+                                          det.json().get("result") or det.json())
+                                    lat_f = float(pl.get("latitude")  or pl.get("lat") or 0)
+                                    lon_f = float(pl.get("longitude") or pl.get("lng") or 0)
+                                    if lat_f and lon_f:
+                                        break
+                            except Exception:
+                                pass
+
+                if lat_f and lon_f:
+                    print(f"  📍 Place Search geocode: '{place}' → ({lat_f:.5f}, {lon_f:.5f})")
+                    return (lat_f, lon_f)
+    except Exception as exc:
+        print(f"  ⚠️  Place Search geocode failed: {exc}")
+
+    # ── Path 3: Mappls Geocoding API (address-style fallback) ─────────────────
+    try:
         resp = _req.get(
             "https://atlas.mappls.com/api/places/geocode",
-            params={"address": place, "region": "IND", "access_token": access_token},
+            params={"address": place, "region": "IND", "access_token": token},
             timeout=10,
         )
-        resp.raise_for_status()
-        data = resp.json()
-
-        # Mappls returns results under 'copResults' (single) or 'results' (list)
-        cop = data.get("copResults") or {}
-        if not cop and data.get("results"):
-            cop = data["results"][0]
-
-        # ── Guard: empty response or missing latitude ─────────────────────────
-        if not cop or "latitude" not in cop:
-            raise ValueError(f"Could not locate: {place}")
-
-        lat = float(cop.get("latitude")  or cop.get("lat", 0))
-        lon = float(cop.get("longitude") or cop.get("lng") or cop.get("lon", 0))
-
-        if lat == 0.0 and lon == 0.0:
-            raise ValueError(f"Could not locate: {place}")
-
-        print(f"  📍 Mappls geocode: '{place}' → ({lat:.5f}, {lon:.5f})")
-        return (lat, lon)
-
-    except ValueError:
-        raise
+        if resp.ok:
+            data = resp.json()
+            cop = data.get("copResults") or {}
+            if not cop and data.get("results"):
+                cop = data["results"][0]
+            if cop:
+                lat = float(cop.get("latitude")  or cop.get("lat") or 0)
+                lon = float(cop.get("longitude") or cop.get("lng") or
+                            cop.get("lon") or 0)
+                if lat and lon:
+                    print(f"  📍 Geocoding API: '{place}' → ({lat:.5f}, {lon:.5f})")
+                    return (lat, lon)
     except Exception as exc:
-        raise ValueError(f"Could not geocode '{place}': {exc}") from exc
+        print(f"  ⚠️  Geocoding API failed: {exc}")
+
+    raise ValueError(f"Could not locate: {place}")
+
 
 
 
