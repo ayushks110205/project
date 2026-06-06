@@ -301,24 +301,39 @@
 
     /* ── Traffic Pill ── */
     .traffic-pill {
-      display:flex; align-items:center; gap:6px;
+      display:flex; align-items:center; gap:7px;
       margin-top:10px;
-      font-size:11px; color:var(--text-muted);
-      padding:5px 8px;
-      border-radius:var(--radius-sm);
+      font-size:11.5px; font-weight:500; letter-spacing:.01em;
+      padding:6px 10px;
+      border-radius:20px;
+      border:1px solid rgba(255,255,255,.06);
       background:rgba(255,255,255,.04);
+      width:fit-content;
+      transition:background .2s, color .2s;
     }
     .traffic-pill .tp-dot {
       width:7px; height:7px; border-radius:50%; flex-shrink:0;
+      animation:tp-pulse 2.4s ease-in-out infinite;
     }
-    .traffic-pill.t-light   { background:rgba(245,197,24,.07); color:hsl(46,92%,60%); }
-    .traffic-pill.t-moderate { background:rgba(245,148,24,.08); color:hsl(34,92%,60%); }
-    .traffic-pill.t-heavy   { background:rgba(248,81,73,.08);  color:var(--color-damaged); }
-    .traffic-pill.t-severe  { background:rgba(200,30,30,.12);  color:#ff6b6b; }
-    .traffic-pill.t-light   .tp-dot { background:hsl(46,92%,55%); }
+    @keyframes tp-pulse {
+      0%,100%{ opacity:1; transform:scale(1); }
+      50%{     opacity:.55; transform:scale(1.35); }
+    }
+    /* free-flow — green */
+    .traffic-pill.t-free     { background:rgba(35,197,94,.08);  color:hsl(142,68%,55%); border-color:rgba(35,197,94,.18); }
+    .traffic-pill.t-free     .tp-dot { background:hsl(142,68%,50%); }
+    /* light — amber */
+    .traffic-pill.t-light    { background:rgba(245,197,24,.08);  color:hsl(46,92%,60%);  border-color:rgba(245,197,24,.18); }
+    .traffic-pill.t-light    .tp-dot { background:hsl(46,92%,55%); }
+    /* moderate — orange */
+    .traffic-pill.t-moderate { background:rgba(245,148,24,.09);  color:hsl(34,92%,60%);  border-color:rgba(245,148,24,.18); }
     .traffic-pill.t-moderate .tp-dot { background:hsl(34,92%,55%); }
-    .traffic-pill.t-heavy   .tp-dot { background:var(--color-damaged); }
-    .traffic-pill.t-severe  .tp-dot { background:#ff4444; }
+    /* heavy — red */
+    .traffic-pill.t-heavy    { background:rgba(248,81,73,.09);   color:#f85149;           border-color:rgba(248,81,73,.22); }
+    .traffic-pill.t-heavy    .tp-dot { background:#f85149; }
+    /* severe — crimson */
+    .traffic-pill.t-severe   { background:rgba(200,30,30,.13);   color:#ff6b6b;           border-color:rgba(200,30,30,.28); }
+    .traffic-pill.t-severe   .tp-dot { background:#ff4444; }
 
     /* ── Leaflet ── */
     .leaflet-container       { background:var(--bg-root) !important; font-family:var(--font) !important; }
@@ -692,21 +707,19 @@
     function buildTrafficPill(containerId, status, delayMin) {
       const el = document.getElementById(containerId);
       if (!el) return;
-      // Remove all t-* classes
       el.className = 'traffic-pill';
-      if (!status || status === 'free_flow') { el.style.display = 'none'; return; }
 
       const cfg = {
-        light:    { cls:'t-light',    label:'Light traffic' },
-        moderate: { cls:'t-moderate', label:'Moderate traffic' },
-        heavy:    { cls:'t-heavy',    label:'Heavy traffic' },
-        severe:   { cls:'t-severe',   label:'Severe congestion' },
+        free_flow: { cls:'t-free',     label:'Free flow',         icon:'🟢' },
+        light:     { cls:'t-light',    label:'Light traffic',     icon:'🟡' },
+        moderate:  { cls:'t-moderate', label:'Moderate traffic',  icon:'🟠' },
+        heavy:     { cls:'t-heavy',    label:'Heavy traffic',     icon:'🔴' },
+        severe:    { cls:'t-severe',   label:'Severe congestion', icon:'🚨' },
       };
-      const c = cfg[status];
-      if (!c) { el.style.display = 'none'; return; }
+      const c = cfg[status] || cfg['free_flow'];
 
       el.classList.add(c.cls);
-      const delay = (delayMin && delayMin > 0) ? ` · +${delayMin} min` : '';
+      const delay = (delayMin && delayMin > 0) ? ` · +${delayMin} min delay` : '';
       el.innerHTML = `<span class="tp-dot"></span>${c.label}${delay}`;
       el.style.display = 'flex';
     }
