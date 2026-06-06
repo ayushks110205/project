@@ -1451,45 +1451,70 @@ async def autocomplete_proxy(q: str, state: str = ""):
             except Exception:
                 pass
 
-        # c: Nominatim — max 1 per request, bounded to selected state if available
+        # c: Nominatim — two-pass, always state-validated
         if (not lat_f or not lon_f) and ext_calls < 1:
             try:
-                nom_params = {
-                    "q":           f"{place_name}, {state}, India" if state else f"{place_name}, India",
-                    "format":      "json",
-                    "countrycodes": "in",
-                    "limit":       "3",
-                }
-                # Constrain to state bounding box so "Sakchi, Jharkhand" won't
-                # resolve to a Sakchi in another state
-                if state and state in _STATE_VIEWBOX:
-                    nom_params["viewbox"] = _STATE_VIEWBOX[state]
-                    nom_params["bounded"] = "1"
-                nom = _requests.get(
-                    "https://nominatim.openstreetmap.org/search",
-                    params=nom_params,
-                    headers={"User-Agent": "RoadSense/2.0 (huggingface.co)"},
-                    timeout=8,
-                )
-                ext_calls += 1
-                if nom.status_code == 429:
-                    print(f"  Nom 429 rate-limited for '{place_name}'")
-                elif nom.ok and nom.json():
-                    h = nom.json()[0]
-                    lat_f = float(h.get("lat", 0))
-                    lon_f = float(h.get("lon", 0))
-                    if lat_f and lon_f:
-                        _autocomplete_coord_cache[place_name] = (lat_f, lon_f)
-                        print(f"  Nom cached '{place_name}' -> ({lat_f:.5f},{lon_f:.5f})")
-            except Exception as ex:
-                print(f"  Nom error '{place_name}': {ex}")
+                def _nom_query(q_str, bounded=False):
+                    p = {"q": q_str, "format": "json",
+                         "countrycodes": "in", "limit": "5"}
+                    if bounded and state in _STATE_VIEWBOX:
+                        p["viewbox"] = _STATE_VIEWBOX[state]
+                        p["bounded"] = "1"
+                    r = _requests.get(
+                        "https://nominatim.openstreetmap.org/search",
+                        params=p,
+                        headers={"User-Agent": "RoadSense/2.0 (huggingface.co)"},
+                        timeout=8,
+                    )
+                    return r
+
+                # Pass 1: bounded=1 inside state bbox
+                q1 = f"{place_name}, {state}, India" if state else f"{place_name}, India"
+                nom = _nom_query(q1, bounded=True)
                 ext_calls += 1
 
-        if lat_f and lon_f:
+                hits = nom.json() if (nom.ok and nom.json()) else []
+
+                # Pick first hit that's inside the state
+                for h in hits:
+                    _lt = float(h.get("lat", 0))
+                    _ln = float(h.get("lon", 0))
+                    if _lt and _ln and _in_state_bounds(_lt, _ln, state):
+                        lat_f, lon_f = _lt, _ln
+                        break
+                    elif _lt and _ln:
+                        print(f"  Nom P1: '{place_name}' @ ({_lt:.3f},{_ln:.3f}) outside {state} — skipped")
+
+                # Pass 2: if still no valid coords, retry unbounded but validate
+                if (not lat_f or not lon_f) and state:
+                    q2 = f"{place_name}, {state}, India"
+                    nom2 = _nom_query(q2, bounded=False)
+                    for h in (nom2.json() if nom2.ok else []):
+                        _lt = float(h.get("lat", 0))
+                        _ln = float(h.get("lon", 0))
+                        if _lt and _ln and _in_state_bounds(_lt, _ln, state):
+                            lat_f, lon_f = _lt, _ln
+                            break
+                        elif _lt and _ln:
+                            print(f"  Nom P2: '{place_name}' @ ({_lt:.3f},{_ln:.3f}) outside {state} — skipped")
+
+                if lat_f and lon_f:
+                    _autocomplete_coord_cache[place_name] = (lat_f, lon_f)
+                    print(f"  Nom cached '{place_name}' -> ({lat_f:.5f},{lon_f:.5f})")
+                else:
+                    print(f"  Nom: no valid coords found for '{place_name}' in {state}")
+            except Exception as ex:
+                print(f"  Nom error '{place_name}': {ex}")
+
+        # Only append if coords are valid AND inside the selected state
+        if lat_f and lon_f and _in_state_bounds(lat_f, lon_f, state):
             results.append({"name": place_name, "address": place_addr,
                              "lat": str(lat_f), "lon": str(lon_f)})
+        elif lat_f and lon_f:
+            print(f"  Final reject: '{place_name}' @ ({lat_f:.3f},{lon_f:.3f}) outside {state}")
         if len(results) >= 3:
             break
+
 
     print(f"  Autocomplete (Tier2) resolved={len(results)} cache={len(_autocomplete_coord_cache)}")
     return JSONResponse({"results": results})
