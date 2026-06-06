@@ -605,8 +605,9 @@
       if (_stateOverlayLayer)  { map.removeLayer(_stateOverlayLayer);  _stateOverlayLayer  = null; }
 
       if (!stateName || !STATE_BOUNDS[stateName]) {
-        // Reset to India view, remove maxBounds lock
+        // Reset to India view — unlock pan AND zoom
         map.setMaxBounds(null);
+        map.setMinZoom(4);
         map.setView([20, 78], 5, { animate: true, duration: 0.8 });
         return;
       }
@@ -616,28 +617,29 @@
       // 1. Fit map to state with smooth animation
       map.fitBounds(bounds, { padding: [24, 24], animate: true, duration: 0.9 });
 
-      // 2. Lock panning to state + small buffer so user can't drift away
-      map.setMaxBounds(bounds.pad(0.35));
+      // 2. Lock panning tightly to state
+      map.setMaxBounds(bounds.pad(0.15));
 
-      // 3. Draw glowing state boundary rectangle
+      // 3. Lock minZoom AFTER fitBounds settles — prevents zooming out of the state
+      map.once('moveend', function () {
+        map.setMinZoom(map.getZoom());
+      });
+
+      // 4. Draw dashed blue boundary rectangle
       _stateBoundaryLayer = L.rectangle(bounds, {
-        color:       '#378ADD',
-        weight:      2.5,
-        opacity:     0.85,
-        fill:        false,
-        dashArray:   '6 4',
-        lineCap:     'round',
-        lineJoin:    'round',
-        className:   'state-boundary-rect',
+        color:     '#378ADD',
+        weight:    2.5,
+        opacity:   0.9,
+        fill:      false,
+        dashArray: '6 4',
       }).addTo(map);
 
-      // 4. Dark vignette outside state (world rectangle minus state = two big rects top/bottom + sides)
-      // Use a single large rectangle over world with low opacity as a vignette hint
+      // 5. Dark vignette over the rest of the world
       _stateOverlayLayer = L.rectangle(
-        [[-90, -180], [90, 180]],
+        [[-90,-180],[90,180]],
         { color:'none', weight:0, fillColor:'#0d1117', fillOpacity:0.45, interactive:false }
       ).addTo(map);
-      // Bring boundary on top
+
       _stateBoundaryLayer.bringToFront();
     }
 
@@ -809,19 +811,27 @@
     function buildTrafficPill(containerId, status, delayMin) {
       const el = document.getElementById(containerId);
       if (!el) return;
-      // Reset — remove all t-* classes
-      el.className = 'traffic-pill';
-      const cfg = {
-        free_flow: { cls:'t-free',     label:'Free flow' },
-        light:     { cls:'t-light',    label:'Light traffic' },
-        moderate:  { cls:'t-moderate', label:'Moderate traffic' },
-        heavy:     { cls:'t-heavy',    label:'Heavy traffic' },
-        severe:    { cls:'t-severe',   label:'Severe congestion' },
+      // Pure inline styles — bypasses ALL CSS specificity/display issues
+      const PILL = {
+        free_flow: { bg:'rgba(35,197,94,.22)',  dot:'#3dd68c', color:'#3dd68c', label:'Free flow' },
+        light:     { bg:'rgba(245,197,24,.2)',  dot:'#f5c518', color:'#f5c518', label:'Light traffic' },
+        moderate:  { bg:'rgba(245,148,24,.2)',  dot:'#f59418', color:'#f59418', label:'Moderate traffic' },
+        heavy:     { bg:'rgba(248,81,73,.25)',  dot:'#f85149', color:'#f85149', label:'Heavy traffic' },
+        severe:    { bg:'rgba(200,30,30,.30)',  dot:'#ff4444', color:'#ff6b6b', label:'Severe congestion' },
       };
-      const c = cfg[status] || cfg['free_flow'];
-      el.classList.add(c.cls);  // CSS shows the pill when t-* class is present
-      const delay = (delayMin && delayMin > 0) ? ` · +${delayMin} min delay` : '';
-      el.innerHTML = `<span class="tp-dot"></span>${c.label}${delay}`;
+      const p = PILL[status] || PILL.free_flow;
+      const delay = (delayMin && delayMin > 0) ? ` &middot; +${delayMin} min delay` : '';
+      // Apply all styles directly — no class needed
+      Object.assign(el.style, {
+        display:'flex', alignItems:'center', gap:'8px',
+        marginTop:'10px', marginBottom:'4px',
+        padding:'6px 12px', borderRadius:'8px',
+        borderLeft:`3px solid ${p.dot}`,
+        background: p.bg, color: p.color,
+        fontSize:'12px', fontWeight:'600',
+        width:'fit-content', boxSizing:'border-box',
+      });
+      el.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${p.dot};display:inline-block;flex-shrink:0;"></span>${p.label}${delay}`;
     }
 
     /* ════════════════════════ Map Helpers ═════════════════════ */
