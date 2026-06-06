@@ -300,39 +300,45 @@
     .extra-note { margin-top:10px; font-size:12px; color:var(--text-muted); font-style:italic; }
 
     /* ── Traffic Pill ── */
+    /* Hidden until a t-* class is applied — no JS display toggling needed */
     .traffic-pill {
-      display:flex; align-items:center; gap:7px;
-      margin-top:10px;
-      font-size:11.5px; font-weight:500; letter-spacing:.01em;
-      padding:6px 10px;
-      border-radius:20px;
-      border:1px solid rgba(255,255,255,.06);
-      background:rgba(255,255,255,.04);
+      display:none;  /* shown only when t-* class present */
+    }
+    .traffic-pill.t-free,
+    .traffic-pill.t-light,
+    .traffic-pill.t-moderate,
+    .traffic-pill.t-heavy,
+    .traffic-pill.t-severe {
+      display:flex; align-items:center; gap:8px;
+      margin-top:10px; margin-bottom:4px;
+      font-size:12px; font-weight:600; letter-spacing:.02em;
+      padding:6px 12px;
+      border-radius:8px;
+      border-left:3px solid;
       width:fit-content;
-      transition:background .2s, color .2s;
     }
     .traffic-pill .tp-dot {
-      width:7px; height:7px; border-radius:50%; flex-shrink:0;
-      animation:tp-pulse 2.4s ease-in-out infinite;
+      width:8px; height:8px; border-radius:50%; flex-shrink:0;
+      animation:tp-pulse 2s ease-in-out infinite;
     }
     @keyframes tp-pulse {
-      0%,100%{ opacity:1; transform:scale(1); }
-      50%{     opacity:.55; transform:scale(1.35); }
+      0%,100%{ opacity:1;   transform:scale(1); }
+      50%{     opacity:.45; transform:scale(1.5); }
     }
     /* free-flow — green */
-    .traffic-pill.t-free     { background:rgba(35,197,94,.08);  color:hsl(142,68%,55%); border-color:rgba(35,197,94,.18); }
-    .traffic-pill.t-free     .tp-dot { background:hsl(142,68%,50%); }
+    .traffic-pill.t-free     { background:rgba(35,197,94,.15); color:#3dd68c; border-left-color:#3dd68c; }
+    .traffic-pill.t-free     .tp-dot { background:#3dd68c; }
     /* light — amber */
-    .traffic-pill.t-light    { background:rgba(245,197,24,.08);  color:hsl(46,92%,60%);  border-color:rgba(245,197,24,.18); }
-    .traffic-pill.t-light    .tp-dot { background:hsl(46,92%,55%); }
+    .traffic-pill.t-light    { background:rgba(245,197,24,.15); color:#f5c518; border-left-color:#f5c518; }
+    .traffic-pill.t-light    .tp-dot { background:#f5c518; }
     /* moderate — orange */
-    .traffic-pill.t-moderate { background:rgba(245,148,24,.09);  color:hsl(34,92%,60%);  border-color:rgba(245,148,24,.18); }
-    .traffic-pill.t-moderate .tp-dot { background:hsl(34,92%,55%); }
+    .traffic-pill.t-moderate { background:rgba(245,148,24,.15); color:#f59418; border-left-color:#f59418; }
+    .traffic-pill.t-moderate .tp-dot { background:#f59418; }
     /* heavy — red */
-    .traffic-pill.t-heavy    { background:rgba(248,81,73,.09);   color:#f85149;           border-color:rgba(248,81,73,.22); }
+    .traffic-pill.t-heavy    { background:rgba(248,81,73,.18);  color:#f85149; border-left-color:#f85149; }
     .traffic-pill.t-heavy    .tp-dot { background:#f85149; }
     /* severe — crimson */
-    .traffic-pill.t-severe   { background:rgba(200,30,30,.13);   color:#ff6b6b;           border-color:rgba(200,30,30,.28); }
+    .traffic-pill.t-severe   { background:rgba(200,30,30,.22);  color:#ff6b6b; border-left-color:#ff6b6b; }
     .traffic-pill.t-severe   .tp-dot { background:#ff4444; }
 
     /* ── Leaflet ── */
@@ -495,7 +501,7 @@
               <div class="seg-bar" id="fast-bar"></div>
               <div class="seg-legend" id="fast-legend"></div>
             </div>
-            <div class="traffic-pill" id="fast-traffic" style="display:none;"></div>
+            <div class="traffic-pill" id="fast-traffic"></div>
             <div class="warnings" id="fast-warnings"></div>
           </article>
 
@@ -518,7 +524,7 @@
               <div class="seg-bar" id="safe-bar"></div>
               <div class="seg-legend" id="safe-legend"></div>
             </div>
-            <div class="traffic-pill" id="safe-traffic" style="display:none;"></div>
+            <div class="traffic-pill" id="safe-traffic"></div>
             <div class="warnings" id="safe-warnings"></div>
             <div class="extra-note" id="safe-extra" style="display:none;"></div>
           </article>
@@ -707,21 +713,19 @@
     function buildTrafficPill(containerId, status, delayMin) {
       const el = document.getElementById(containerId);
       if (!el) return;
+      // Reset — remove all t-* classes
       el.className = 'traffic-pill';
-
       const cfg = {
-        free_flow: { cls:'t-free',     label:'Free flow',         icon:'🟢' },
-        light:     { cls:'t-light',    label:'Light traffic',     icon:'🟡' },
-        moderate:  { cls:'t-moderate', label:'Moderate traffic',  icon:'🟠' },
-        heavy:     { cls:'t-heavy',    label:'Heavy traffic',     icon:'🔴' },
-        severe:    { cls:'t-severe',   label:'Severe congestion', icon:'🚨' },
+        free_flow: { cls:'t-free',     label:'Free flow' },
+        light:     { cls:'t-light',    label:'Light traffic' },
+        moderate:  { cls:'t-moderate', label:'Moderate traffic' },
+        heavy:     { cls:'t-heavy',    label:'Heavy traffic' },
+        severe:    { cls:'t-severe',   label:'Severe congestion' },
       };
       const c = cfg[status] || cfg['free_flow'];
-
-      el.classList.add(c.cls);
+      el.classList.add(c.cls);  // CSS shows the pill when t-* class is present
       const delay = (delayMin && delayMin > 0) ? ` · +${delayMin} min delay` : '';
       el.innerHTML = `<span class="tp-dot"></span>${c.label}${delay}`;
-      el.style.display = 'flex';
     }
 
     /* ════════════════════════ Map Helpers ═════════════════════ */
