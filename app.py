@@ -1316,6 +1316,20 @@ _STATE_VIEWBOX = {
     'Puducherry':         '79.6,11.6,80.2,12.1',
 }
 
+# Parse viewbox strings into (min_lon, min_lat, max_lon, max_lat) tuples once
+_STATE_BBOX_PARSED = {
+    k: tuple(float(x) for x in v.split(','))
+    for k, v in _STATE_VIEWBOX.items()
+}
+
+def _in_state_bounds(lat: float, lon: float, state: str) -> bool:
+    """Return True if (lat, lon) is inside the state's bounding box.
+    If state is not in our table, always returns True (no constraint)."""
+    if not state or state not in _STATE_BBOX_PARSED:
+        return True
+    min_lon, min_lat, max_lon, max_lat = _STATE_BBOX_PARSED[state]
+    return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+
 
 @app.get('/autocomplete', tags=['Navigation'], include_in_schema=False)
 async def autocomplete_proxy(q: str, state: str = ""):
@@ -1358,10 +1372,13 @@ async def autocomplete_proxy(q: str, state: str = ""):
                 except ValueError:
                     lat_f = lon_f = 0.0
 
-                if lat_f and lon_f:
+                # Reject coords outside selected state
+                if lat_f and lon_f and _in_state_bounds(lat_f, lon_f, state):
                     _autocomplete_coord_cache[place_name] = (lat_f, lon_f)
                     results.append({"name": place_name, "address": place_addr,
                                     "lat": str(lat_f), "lon": str(lon_f)})
+                elif lat_f and lon_f:
+                    print(f"  TextSearch: '{place_name}' @ ({lat_f:.3f},{lon_f:.3f}) outside {state} — skipped")
                 if len(results) >= 3:
                     break
 
@@ -1427,6 +1444,10 @@ async def autocomplete_proxy(q: str, state: str = ""):
                     lo = cop.get("longitude") or cop.get("lng") or cop.get("lon") or ""
                     lat_f = float(ls) if ls else 0.0
                     lon_f = float(lo) if lo else 0.0
+                    # Reject if outside selected state
+                    if not _in_state_bounds(lat_f, lon_f, state):
+                        print(f"  Geocode: '{place_name}' @ ({lat_f:.3f},{lon_f:.3f}) outside {state} — skipped")
+                        lat_f = lon_f = 0.0
             except Exception:
                 pass
 
