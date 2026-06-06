@@ -913,17 +913,19 @@ def build_route_info(
         est_min = round(raw_min)
 
     return {
-        'distance_km':       round(total_dist_m / 1000, 1),
-        'estimated_minutes': est_min,
-        'polyline':          polyline,
+        'distance_km':          round(total_dist_m / 1000, 1),
+        'estimated_minutes':    est_min,
+        'polyline':             polyline,
         'segments': {
             'good_km':    round(good_m / 1000, 2),
             'unpaved_km': round(unpaved_m / 1000, 2),
             'damaged_km': round(damaged_m / 1000, 2),
         },
-        'warnings':      warnings,
-        'road_count':    road_count,
-        'junction_count': junction_count,
+        'warnings':             warnings,
+        'road_count':           road_count,
+        'junction_count':       junction_count,
+        'traffic_status':       traffic_status,
+        'traffic_delay_minutes': traffic_delay_minutes,
     }
 
 
