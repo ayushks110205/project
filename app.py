@@ -1276,19 +1276,17 @@ def _get_mappls_token() -> str:
     return c["token"]
 
 
-# ── Coord cache: place_name -> (lat,lon). Lives for server lifetime.
-# First keystroke geocodes via Nominatim (max 1 call per request).
-# Every subsequent keystroke returning the same place_name hits cache instantly.
+# Coord cache: place_name -> (lat, lon). Lives for server lifetime.
 _autocomplete_coord_cache: dict = {}
 
 
 @app.get('/autocomplete', tags=['Navigation'], include_in_schema=False)
 async def autocomplete_proxy(q: str, state: str = ""):
     """
-    Mappls autocomplete. Suggestions from Mappls Place Search (India-quality POI data).
-    Coords resolved: cache -> Mappls Geocode -> Nominatim (max 1/request, rate-limit safe).
-    Root cause of 429: old code used ThreadPoolExecutor(3) -> 3 parallel Nominatim
-    calls per keystroke. Fix: sequential, max 1 external call per request, cache results.
+    Mappls autocomplete. Two-tier strategy:
+      Tier 1: Mappls Text Search API  — returns lat/lon directly (1 call, fast)
+      Tier 2: Mappls Place Search + cache + Nominatim  — fallback when Text Search
+              quota is exhausted (100/day) or returns empty results.
     """
     if not (_MAPPLS_CLIENT_ID or _MAPPLS_KEY):
         return JSONResponse({"results": [], "error": "Mappls credentials not configured"})
@@ -1298,28 +1296,70 @@ async def autocomplete_proxy(q: str, state: str = ""):
         return JSONResponse({"results": [], "error": str(e)})
 
     query = f"{q}, {state}" if state else q
+    results = []
+
+    # ── Tier 1: Text Search (returns lat/lon directly) ────────────────────────
+    try:
+        ts = _requests.get(
+            "https://atlas.mappls.com/api/places/textsearch/json",
+            params={"query": query, "access_token": token, "region": "IND"},
+            timeout=6,
+        )
+        if ts.ok:
+            hits = (ts.json().get("suggestedLocations") or
+                    ts.json().get("results") or [])
+            for loc in hits[:8]:
+                place_name = (loc.get("placeName") or loc.get("name") or "").strip()
+                place_addr = (loc.get("placeAddress") or loc.get("address") or "").strip()
+                lat_s = str(loc.get("latitude")  or loc.get("lat") or "").strip()
+                lon_s = str(loc.get("longitude") or loc.get("lon") or "").strip()
+                if not place_name:
+                    continue
+                try:
+                    lat_f = float(lat_s) if lat_s else 0.0
+                    lon_f = float(lon_s) if lon_s else 0.0
+                except ValueError:
+                    lat_f = lon_f = 0.0
+
+                if lat_f and lon_f:
+                    _autocomplete_coord_cache[place_name] = (lat_f, lon_f)
+                    results.append({"name": place_name, "address": place_addr,
+                                    "lat": str(lat_f), "lon": str(lon_f)})
+                if len(results) >= 3:
+                    break
+
+            if results:
+                print(f"  Text Search resolved={len(results)} cache={len(_autocomplete_coord_cache)}")
+                return JSONResponse({"results": results})
+            # Text Search returned results but none had coords — fall through
+    except Exception as ex:
+        print(f"  Text Search error: {ex}")
+
+    # ── Tier 2: Place Search + cache + Nominatim (max 1 external call) ────────
     try:
         search_resp = _requests.get(
             "https://atlas.mappls.com/api/places/search/json",
-            params={"query": query, "access_token": token}, timeout=6,
+            params={"query": query, "access_token": token},
+            timeout=6,
         )
         if not search_resp.ok and state:
             search_resp = _requests.get(
                 "https://atlas.mappls.com/api/places/search/json",
-                params={"query": q, "access_token": token}, timeout=6,
+                params={"query": q, "access_token": token},
+                timeout=6,
             )
     except Exception as e:
         return JSONResponse({"results": [], "error": str(e)})
 
     if not search_resp.ok:
         return JSONResponse({"results": []})
+
     raw = (search_resp.json().get("suggestedLocations") or
            search_resp.json().get("results") or [])
     if not raw:
         return JSONResponse({"results": []})
 
-    results  = []
-    ext_calls = 0   # max 1 Nominatim call per autocomplete request
+    ext_calls = 0
 
     for loc in raw[:8]:
         place_name = (loc.get("placeName") or loc.get("name") or "").strip()
@@ -1329,11 +1369,11 @@ async def autocomplete_proxy(q: str, state: str = ""):
 
         lat_f = lon_f = 0.0
 
-        # A: cache hit (instant, no API call)
+        # a: cache hit
         if place_name in _autocomplete_coord_cache:
             lat_f, lon_f = _autocomplete_coord_cache[place_name]
 
-        # B: Mappls Geocode (no rate limit; returns empty copResults for POIs)
+        # b: Mappls Geocode (fast, no rate limit)
         if not lat_f or not lon_f:
             try:
                 fa = f"{place_name}, {place_addr}" if place_addr else place_name
@@ -1353,7 +1393,7 @@ async def autocomplete_proxy(q: str, state: str = ""):
             except Exception:
                 pass
 
-        # C: Nominatim — max 1 call per autocomplete request (rate-limit safe)
+        # c: Nominatim — max 1 per request
         if (not lat_f or not lon_f) and ext_calls < 1:
             try:
                 nom = _requests.get(
@@ -1365,7 +1405,7 @@ async def autocomplete_proxy(q: str, state: str = ""):
                 )
                 ext_calls += 1
                 if nom.status_code == 429:
-                    print(f"  Nom 429 rate-limited for '{place_name}' — skipping")
+                    print(f"  Nom 429 rate-limited for '{place_name}'")
                 elif nom.ok and nom.json():
                     h = nom.json()[0]
                     lat_f = float(h.get("lat", 0))
@@ -1383,7 +1423,7 @@ async def autocomplete_proxy(q: str, state: str = ""):
         if len(results) >= 3:
             break
 
-    print(f"  Autocomplete resolved={len(results)} cache={len(_autocomplete_coord_cache)}")
+    print(f"  Autocomplete (Tier2) resolved={len(results)} cache={len(_autocomplete_coord_cache)}")
     return JSONResponse({"results": results})
 
 
