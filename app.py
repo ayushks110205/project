@@ -1279,6 +1279,43 @@ def _get_mappls_token() -> str:
 # Coord cache: place_name -> (lat, lon). Lives for server lifetime.
 _autocomplete_coord_cache: dict = {}
 
+# State bounding boxes for Nominatim viewbox (min_lon, min_lat, max_lon, max_lat)
+_STATE_VIEWBOX = {
+    'Andhra Pradesh':     '76.7,12.6,84.7,19.9',
+    'Arunachal Pradesh':  '91.5,26.6,97.4,29.5',
+    'Assam':              '89.7,24.1,96.0,27.9',
+    'Bihar':              '83.3,24.3,88.2,27.5',
+    'Chhattisgarh':       '80.2,17.8,84.4,24.1',
+    'Delhi':              '76.84,28.40,77.35,28.88',
+    'Goa':                '73.7,14.9,74.3,15.8',
+    'Gujarat':            '68.2,20.1,74.5,24.7',
+    'Haryana':            '74.4,27.7,77.6,30.9',
+    'Himachal Pradesh':   '75.6,30.4,79.0,33.2',
+    'Jharkhand':          '83.3,21.9,87.9,25.3',
+    'Karnataka':          '74.0,11.6,78.6,18.5',
+    'Kerala':             '74.9,8.2,77.4,12.8',
+    'Madhya Pradesh':     '74.0,21.1,82.8,26.9',
+    'Maharashtra':        '72.6,15.6,80.9,22.0',
+    'Manipur':            '93.0,23.8,94.8,25.7',
+    'Meghalaya':          '89.8,25.0,92.8,26.1',
+    'Mizoram':            '92.2,21.9,93.4,24.5',
+    'Nagaland':           '93.3,25.2,95.3,27.0',
+    'Odisha':             '81.4,17.8,87.5,22.6',
+    'Punjab':             '73.9,29.5,76.9,32.5',
+    'Rajasthan':          '69.5,23.1,78.3,30.2',
+    'Sikkim':             '88.0,27.1,88.9,28.1',
+    'Tamil Nadu':         '76.2,8.1,80.4,13.6',
+    'Telangana':          '77.2,15.8,81.3,19.9',
+    'Tripura':            '91.2,22.9,92.3,24.5',
+    'Uttar Pradesh':      '77.1,23.9,84.7,30.4',
+    'Uttarakhand':        '78.0,28.7,81.0,31.5',
+    'West Bengal':        '85.8,21.5,89.9,27.2',
+    'Jammu and Kashmir':  '73.7,32.3,78.6,36.2',
+    'Ladakh':             '75.2,32.2,80.3,36.0',
+    'Chandigarh':         '76.70,30.64,76.90,30.78',
+    'Puducherry':         '79.6,11.6,80.2,12.1',
+}
+
 
 @app.get('/autocomplete', tags=['Navigation'], include_in_schema=False)
 async def autocomplete_proxy(q: str, state: str = ""):
@@ -1393,13 +1430,23 @@ async def autocomplete_proxy(q: str, state: str = ""):
             except Exception:
                 pass
 
-        # c: Nominatim — max 1 per request
+        # c: Nominatim — max 1 per request, bounded to selected state if available
         if (not lat_f or not lon_f) and ext_calls < 1:
             try:
+                nom_params = {
+                    "q":           f"{place_name}, {state}, India" if state else f"{place_name}, India",
+                    "format":      "json",
+                    "countrycodes": "in",
+                    "limit":       "3",
+                }
+                # Constrain to state bounding box so "Sakchi, Jharkhand" won't
+                # resolve to a Sakchi in another state
+                if state and state in _STATE_VIEWBOX:
+                    nom_params["viewbox"] = _STATE_VIEWBOX[state]
+                    nom_params["bounded"] = "1"
                 nom = _requests.get(
                     "https://nominatim.openstreetmap.org/search",
-                    params={"q": f"{place_name}, India", "format": "json",
-                            "countrycodes": "in", "limit": "1"},
+                    params=nom_params,
                     headers={"User-Agent": "RoadSense/2.0 (huggingface.co)"},
                     timeout=8,
                 )

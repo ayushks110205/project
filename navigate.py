@@ -71,7 +71,7 @@ except ImportError:
 # =============================================================================
 
 EARTH_RADIUS_KM = 6371.0
-MAX_ROUTE_KM = 50.0
+MAX_ROUTE_KM = 200.0
 
 # Vehicle minimum road widths (metres) for passability.
 # More conservative than road_graph.py values because these apply to real-world
@@ -978,7 +978,7 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
     print(f"  📏 Straight-line: {dist_km:.1f} km")
     if dist_km > MAX_ROUTE_KM:
         raise ValueError(
-            "Route too long — keep both points within 50 km of each other.")
+            "Route too long — keep both points within 200 km of each other.")
 
     # ── 3 + 4. Parallel: osmnx graph download  +  Sentinel-2 ─────────────────
     # build_road_graph is LRU-cached so it's fast on repeat calls.
