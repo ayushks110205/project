@@ -1431,8 +1431,16 @@ async def autocomplete_proxy(q: str, state: str = ""):
 
 @app.get('/navigate-ui', tags=['Navigation'], include_in_schema=False)
 async def navigate_ui():
-    """Serve the RoadSense navigator UI."""
-    return FileResponse('navigator.html', media_type='text/html')
+    """Serve the RoadSense navigator UI — always fresh (no browser cache)."""
+    return FileResponse(
+        'navigator.html',
+        media_type='text/html',
+        headers={
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'Pragma':        'no-cache',
+            'Expires':       '0',
+        },
+    )
 
 
 @app.post('/navigate', tags=['Navigation'])
