@@ -1446,6 +1446,8 @@ async def autocomplete_proxy(q: str, state: str = ""):
 
     raw = (search_resp.json().get("suggestedLocations") or
            search_resp.json().get("results") or [])
+
+    nom_total = 0   # total Nominatim calls this request (cap at 3)
     if not raw:
         return JSONResponse({"results": []})
 
@@ -1458,6 +1460,7 @@ async def autocomplete_proxy(q: str, state: str = ""):
             continue
 
         lat_f = lon_f = 0.0
+        ext_calls = 0   # reset per place (Nominatim rate-limited globally via _call_nominatim)
 
         # a: cache hit
         if place_name in _autocomplete_coord_cache:
@@ -1480,21 +1483,23 @@ async def autocomplete_proxy(q: str, state: str = ""):
                     lo = cop.get("longitude") or cop.get("lng") or cop.get("lon") or ""
                     lat_f = float(ls) if ls else 0.0
                     lon_f = float(lo) if lo else 0.0
-                    # Reject if outside selected state
-                    if not _in_state_bounds(lat_f, lon_f, state):
+                    # Only flag bad state if coords are actually non-zero
+                    if lat_f and lon_f and not _in_state_bounds(lat_f, lon_f, state):
                         print(f"  Geocode: '{place_name}' @ ({lat_f:.3f},{lon_f:.3f}) outside {state} — skipped")
                         lat_f = lon_f = 0.0
+                    # If (0,0) → API returned nothing, don't print misleading message
             except Exception:
                 pass
 
-        # c: Nominatim — single call, rate-limited, state-validated
-        if (not lat_f or not lon_f) and ext_calls < 1:
+        # c: Nominatim — per-place, rate-limited, state-validated, cap=3/request
+        if (not lat_f or not lon_f) and ext_calls < 1 and nom_total < 3:
             nom_q = f"{place_name}, {state}, India" if state else f"{place_name}, India"
             vbox  = _STATE_VIEWBOX.get(state, "") if state else ""
 
-            # Try bounded first (only returns results inside state bbox)
+            # Try bounded first
             hits = _call_nominatim(nom_q, viewbox=vbox, bounded=bool(vbox))
             ext_calls += 1
+            nom_total  += 1
 
             for h in hits:
                 _lt = float(h.get("lat", 0) or 0)
@@ -1505,9 +1510,10 @@ async def autocomplete_proxy(q: str, state: str = ""):
                 elif _lt and _ln:
                     print(f"  Nom: '{place_name}' @ ({_lt:.3f},{_ln:.3f}) outside {state} — skipped")
 
-            # If bounded returned nothing, retry without bounding but still validate
+            # If bounded found nothing, try unbounded but still validate
             if not lat_f and vbox:
                 hits2 = _call_nominatim(nom_q, viewbox="", bounded=False)
+                nom_total += 1
                 for h in hits2:
                     _lt = float(h.get("lat", 0) or 0)
                     _ln = float(h.get("lon", 0) or 0)
@@ -1517,11 +1523,24 @@ async def autocomplete_proxy(q: str, state: str = ""):
                     elif _lt and _ln:
                         print(f"  Nom unbounded: '{place_name}' @ ({_lt:.3f},{_ln:.3f}) outside {state} — rejected")
 
+            # If still nothing, retry with shorter query (e.g. 'Telco Colony' → 'Telco')
+            if not lat_f and " " in place_name:
+                short_q = f"{place_name.split()[0]}, {state}, India" if state else f"{place_name.split()[0]}, India"
+                hits3 = _call_nominatim(short_q, viewbox=vbox, bounded=bool(vbox))
+                nom_total += 1
+                for h in hits3:
+                    _lt = float(h.get("lat", 0) or 0)
+                    _ln = float(h.get("lon", 0) or 0)
+                    if _lt and _ln and _in_state_bounds(_lt, _ln, state):
+                        lat_f, lon_f = _lt, _ln
+                        print(f"  Nom short-query match: '{short_q}' → ({_lt:.5f},{_ln:.5f})")
+                        break
+
             if lat_f and lon_f:
                 _autocomplete_coord_cache[place_name] = (lat_f, lon_f)
                 print(f"  Nom cached '{place_name}' -> ({lat_f:.5f},{lon_f:.5f})")
             else:
-                print(f"  Nom: no valid in-state coords for '{place_name}' in '{state}'")
+                print(f"  Nom: no in-state coords for '{place_name}' in '{state}'")
 
         # Final gate: only add result if coord is inside selected state
         if lat_f and lon_f and _in_state_bounds(lat_f, lon_f, state):
