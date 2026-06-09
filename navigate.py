@@ -37,6 +37,14 @@ try:
     import networkx as nx
     from geopy.geocoders import Nominatim
     _NAV_DEPS_OK = True
+    
+    # Configure osmnx fallback endpoints because the main overpass-api.de
+    # server frequently goes down or throws 429 Too Many Requests / 111 Connection refused.
+    ox.settings.overpass_endpoint = [
+        "https://overpass-api.de/api",
+        "https://overpass.kumi.systems/api",
+        "https://maps.mail.ru/osm/tools/overpass/api"
+    ]
 except ImportError:
     pass
 
