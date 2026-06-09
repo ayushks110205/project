@@ -548,6 +548,46 @@ def _sample_road_pixel(
     return best_s, best_w
 
 
+def _osm_surface_label(data: dict):
+    """Classify road surface from OSM tags. Returns label or None if unknown."""
+    highway = data.get('highway', '')
+    if isinstance(highway, list):
+        highway = highway[0] if highway else ''
+    highway = str(highway)
+
+    surface = data.get('surface', '')
+    if isinstance(surface, list):
+        surface = surface[0] if surface else ''
+    surface = str(surface)
+
+    tracktype = data.get('tracktype', '')
+    if isinstance(tracktype, list):
+        tracktype = tracktype[0] if tracktype else ''
+    tracktype = str(tracktype)
+
+    # Damaged: rough tracks, poor surface tags
+    if highway in ('track', 'path', 'bridleway'):
+        return 'damaged'
+    if tracktype in ('grade3', 'grade4', 'grade5'):
+        return 'damaged'
+    if surface in ('dirt', 'ground', 'grass', 'mud',
+                   'sand', 'gravel', 'compacted'):
+        return 'unpaved'
+    if surface in ('unpaved', 'fine_gravel', 'pebblestone'):
+        return 'unpaved'
+
+    # Paved: confirmed good surfaces
+    if surface in ('asphalt', 'concrete', 'paved',
+                   'concrete:plates', 'concrete:lanes'):
+        return 'paved'
+    if highway in ('motorway', 'trunk', 'primary',
+                   'motorway_link', 'trunk_link', 'primary_link'):
+        return 'paved'
+
+    # No OSM tag available
+    return None
+
+
 def paint_ml_on_edges(
         G,
         surface_map: np.ndarray,
@@ -556,21 +596,33 @@ def paint_ml_on_edges(
         vehicle:     str,
 ):
     """
-    For every osmnx edge, sample ML surface/width at ~10 points along
-    the geometry and assign ``ml_surface``, ``ml_width_m``, ``passable``
-    attributes.
+    For every osmnx edge, first try OSM tag-based surface classification.
+    If no OSM tag, fall back to ML pixel sampling at ~10 points along
+    the geometry.  Assigns ``ml_surface``, ``ml_width_m``, ``passable``,
+    ``surface_src`` ('osm' or 'ml') attributes.
     """
     min_w = _NAV_MIN_WIDTH.get(vehicle, 3.0)
+    osm_count = 0
+    ml_count  = 0
 
     for u, v, key, data in G.edges(keys=True, data=True):
-        # ── Get edge geometry ─────────────────────────────────────────────────
+        # ── 1. Try OSM tags first (primary source) ──────────────────────────
+        osm_label = _osm_surface_label(data)
+        if osm_label is not None:
+            data['ml_surface']  = osm_label
+            data['ml_width_m']  = 3.5 if osm_label == 'paved' else 3.0
+            data['passable']    = True  # OSM roads are mapped → passable
+            data['surface_src'] = 'osm'
+            osm_count += 1
+            continue
+
+        # ── 2. Fall back to ML pixel sampling ────────────────────────────────
         if 'geometry' in data:
-            coords = list(data['geometry'].coords)     # [(lon, lat), ...]
+            coords = list(data['geometry'].coords)
         else:
             u_d, v_d = G.nodes[u], G.nodes[v]
             coords = [(u_d['x'], u_d['y']), (v_d['x'], v_d['y'])]
 
-        # ── Sample ~10 evenly-spaced points ───────────────────────────────────
         n_pts   = min(max(len(coords), 2), 10)
         indices = np.linspace(0, len(coords) - 1, n_pts, dtype=int)
 
@@ -586,11 +638,16 @@ def paint_ml_on_edges(
             if w is not None:
                 widths.append(w)
 
-        # ── Assign attributes ─────────────────────────────────────────────────
         data['ml_surface']  = (Counter(surfaces).most_common(1)[0][0]
                                if surfaces else 'unpaved')
         data['ml_width_m']  = float(np.mean(widths)) if widths else 3.0
         data['passable']    = data['ml_width_m'] >= min_w
+        data['surface_src'] = 'ml'
+        ml_count += 1
+
+    # Store counts on graph for later use in response
+    G.graph['_osm_surface_count'] = osm_count
+    G.graph['_ml_surface_count']  = ml_count
 
     return G
 
@@ -926,6 +983,7 @@ def build_route_info(
         'junction_count':       junction_count,
         'traffic_status':       traffic_status,
         'traffic_delay_minutes': traffic_delay_minutes,
+        'surface_source':       _compute_surface_source(G, node_path),
     }
 
 
