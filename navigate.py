@@ -834,6 +834,35 @@ def fetch_traffic_multipliers(
 # Step 8 — Build route response
 # =============================================================================
 
+def _compute_surface_source(G, node_path) -> str:
+    """Determine if a route is primarily OSM-sourced, ML-sourced, or mixed."""
+    osm_edges = 0
+    ml_edges  = 0
+    
+    for u, v in zip(node_path[:-1], node_path[1:]):
+        if not G.has_edge(u, v):
+            continue
+        edges = G[u][v]
+        best_key = min(edges, key=lambda k: edges[k].get('length', float('inf')))
+        src = edges[best_key].get('surface_src', 'ml')
+        if src == 'osm':
+            osm_edges += 1
+        else:
+            ml_edges += 1
+            
+    total = osm_edges + ml_edges
+    if total == 0:
+        return 'unknown'
+        
+    osm_ratio = osm_edges / total
+    if osm_ratio >= 0.7:
+        return 'osm'
+    elif osm_ratio <= 0.3:
+        return 'ml'
+    else:
+        return 'mixed'
+
+
 def build_route_info(
         G,
         node_path: List[int],
