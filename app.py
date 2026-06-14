@@ -1368,7 +1368,8 @@ def _call_nominatim(q: str, viewbox: str = "", bounded: bool = False) -> list:
 
 
 @app.get('/autocomplete', tags=['Navigation'], include_in_schema=False)
-async def autocomplete_proxy(q: str, state: str = ""):
+async def autocomplete_proxy(q: str, state: str = "",
+                              lat: float = None, lng: float = None):
     """
     Mappls autocomplete. Two-tier strategy:
       Tier 1: Mappls Text Search API  — returns lat/lon directly (1 call, fast)
@@ -1387,9 +1388,12 @@ async def autocomplete_proxy(q: str, state: str = ""):
 
     # ── Tier 1: Text Search (returns lat/lon directly) ────────────────────────
     try:
+        ts_params = {"query": query, "access_token": token, "region": "IND"}
+        if lat is not None and lng is not None:
+            ts_params["location"] = f"{lat},{lng}"
         ts = _requests.get(
             "https://atlas.mappls.com/api/places/textsearch/json",
-            params={"query": query, "access_token": token, "region": "IND"},
+            params=ts_params,
             timeout=6,
         )
         if ts.ok:
@@ -1427,9 +1431,13 @@ async def autocomplete_proxy(q: str, state: str = ""):
 
     # ── Tier 2: Place Search + cache + Nominatim (max 1 external call) ────────
     try:
+        ps_params = {"query": query, "access_token": token}
+        if lat is not None and lng is not None:
+            ps_params["location"] = f"{lat},{lng}"
+            ps_params["region"] = "IND"
         search_resp = _requests.get(
             "https://atlas.mappls.com/api/places/search/json",
-            params={"query": query, "access_token": token},
+            params=ps_params,
             timeout=6,
         )
         if not search_resp.ok and state:
