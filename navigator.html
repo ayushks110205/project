@@ -390,6 +390,17 @@
       100% { transform: translate(-50%,-50%) scale(3); opacity: 0; }
     }
 
+    /* ── Recent Searches Dropdown ── */
+    .dropdown-header {
+      font-size: 10px; color: #888; padding: 6px 14px 2px;
+      text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .dropdown-clear {
+      font-size: 11px; color: #888; padding: 6px 14px;
+      cursor: pointer; text-align: right;
+    }
+    .dropdown-clear:hover { color: #f0f0f0; }
+
     /* ── Traffic Pill ── */
     /* Hidden until a t-* class is applied — no JS display toggling needed */
     .traffic-pill {
@@ -1188,6 +1199,19 @@
        Shared across both inputs — no rate limit needed for Mappls */
     let _navApiInProgress  = false;
 
+    /* ── Recent Searches (localStorage) ── */
+    function getRecentSearches() {
+      try { return JSON.parse(localStorage.getItem('roadsense_recent') || '[]'); }
+      catch { return []; }
+    }
+    function saveRecentSearch(name, address, lat, lng) {
+      let recents = getRecentSearches();
+      recents = recents.filter(r => r.name !== name);
+      recents.unshift({ name, address, lat, lng });
+      recents = recents.slice(0, 5);
+      localStorage.setItem('roadsense_recent', JSON.stringify(recents));
+    }
+
     function initAutocomplete(inputEl, dropdownEl) {
       let debounceTimer = null;
       let highlightIdx  = -1;
@@ -1230,8 +1254,47 @@
         const item = items[idx]; if (!item) return;
         inputEl.value = item.name;
         inputEl.dataset.lat = item.lat;
-        inputEl.dataset.lng = item.lon;
+        inputEl.dataset.lng = item.lon || item.lng;
+        saveRecentSearch(item.name, item.address || '', String(item.lat), String(item.lon || item.lng));
         closeDropdown();
+      }
+
+      function showRecentDropdown(recents) {
+        dropdownEl.innerHTML = '';
+        // Header
+        const hdr = document.createElement('div');
+        hdr.className = 'dropdown-header';
+        hdr.textContent = '🕐 Recent searches';
+        dropdownEl.appendChild(hdr);
+        // Items
+        recents.forEach((r, idx) => {
+          const addr = r.address
+            ? r.address.slice(0, 45) + (r.address.length > 45 ? '…' : '')
+            : 'Recent search';
+          const row = document.createElement('div');
+          row.className = 'ac-item';
+          row.innerHTML =
+            `<div class="ac-item-name">🕐 ${escHtml(r.name)}</div>` +
+            `<div class="ac-item-address">${escHtml(addr)}</div>`;
+          row.addEventListener('click', () => {
+            inputEl.value = r.name;
+            inputEl.dataset.lat = r.lat;
+            inputEl.dataset.lng = r.lng;
+            closeDropdown();
+          });
+          dropdownEl.appendChild(row);
+        });
+        // Clear button
+        const clearBtn = document.createElement('div');
+        clearBtn.className = 'dropdown-clear';
+        clearBtn.textContent = 'Clear recent searches';
+        clearBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          localStorage.removeItem('roadsense_recent');
+          closeDropdown();
+        });
+        dropdownEl.appendChild(clearBtn);
+        openDropdown();
       }
 
       function clearStoredCoords() { delete inputEl.dataset.lat; delete inputEl.dataset.lng; }
@@ -1292,7 +1355,14 @@
       });
 
       inputEl.addEventListener('focus', () => {
-        if (items.length > 0 && inputEl.value.trim().length >= 2 && !_navApiInProgress) renderItems();
+        if (_navApiInProgress) return;
+        const val = inputEl.value.trim();
+        if (val.length >= 2 && items.length > 0) {
+          renderItems();
+        } else if (val.length < 2) {
+          const recents = getRecentSearches();
+          if (recents.length > 0) showRecentDropdown(recents);
+        }
       });
     }
 
