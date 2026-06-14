@@ -1025,6 +1025,33 @@ def build_route_info(
 
 
 # =============================================================================
+# Edge-based coordinate snapping
+# =============================================================================
+
+def _snap_to_graph(G, lat: float, lng: float) -> int:
+    """
+    Snap a lat/lng coordinate to the nearest point on the road network.
+    Uses nearest_edges() for precision, then picks the endpoint node
+    of that edge that is closer to the coordinate.
+    Falls back to nearest_nodes() if nearest_edges fails.
+    """
+    try:
+        # ox.nearest_edges returns (u, v, key) of the closest edge
+        u, v, key = ox.nearest_edges(G, lng, lat)  # X=lng, Y=lat
+
+        # Pick the endpoint node closest to our coordinate
+        u_d, v_d = G.nodes[u], G.nodes[v]
+        dist_u = ((u_d['y'] - lat)**2 + (u_d['x'] - lng)**2)**0.5
+        dist_v = ((v_d['y'] - lat)**2 + (v_d['x'] - lng)**2)**0.5
+
+        return u if dist_u <= dist_v else v
+
+    except Exception:
+        # Fallback to nearest_nodes if nearest_edges fails
+        return ox.nearest_nodes(G, lng, lat)
+
+
+# =============================================================================
 # Orchestrator
 # =============================================================================
 
@@ -1125,9 +1152,18 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
         data['weight_safest'] = (length * mult if passable
                                  else _IMPASSABLE_COST + length * mult)
 
-    # ── 9. Find nearest nodes ─────────────────────────────────────────────────
-    orig_node = ox.nearest_nodes(G, origin_ll[1], origin_ll[0])
-    dest_node = ox.nearest_nodes(G, dest_ll[1],   dest_ll[0])
+    # ── 9. Snap origin/destination to nearest edges ───────────────────────────
+    orig_node = _snap_to_graph(G, origin_ll[0], origin_ll[1])
+    dest_node = _snap_to_graph(G, dest_ll[0],   dest_ll[1])
+
+    if orig_node not in G.nodes:
+        raise ValueError("Could not snap origin to road network.")
+    if dest_node not in G.nodes:
+        raise ValueError("Could not snap destination to road network.")
+    if orig_node == dest_node and _haversine_km(*origin_ll, *dest_ll) > 0.5:
+        raise ValueError(
+            "Origin and destination snapped to the same road node — "
+            "try more specific addresses or points further apart.")
 
     # ── 10. Compute routes ────────────────────────────────────────────────────
     fastest_path = compute_route(G, orig_node, dest_node, 'weight_fastest')
