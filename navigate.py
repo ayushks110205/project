@@ -863,6 +863,54 @@ def _compute_surface_source(G, node_path) -> str:
         return 'mixed'
 
 
+def _build_colored_segments(G, node_path: List[int]) -> List[dict]:
+    """
+    Walk *node_path* and group consecutive edges by surface type
+    into coordinate runs for colour-coded polyline rendering.
+
+    Returns a list of dicts:
+        [{ 'surface': 'paved', 'coords': [[lat,lng], ...] }, ...]
+    """
+    segments: List[dict] = []
+    current_surface: Optional[str] = None
+    current_coords: List[List[float]] = []
+
+    for i in range(len(node_path) - 1):
+        u, v = node_path[i], node_path[i + 1]
+        if not G.has_edge(u, v):
+            continue
+
+        edges    = G[u][v]
+        best_key = min(edges, key=lambda k: edges[k].get('length', float('inf')))
+        data     = edges[best_key]
+        surface  = data.get('ml_surface', 'unpaved')
+
+        u_coord = [G.nodes[u]['y'], G.nodes[u]['x']]
+        v_coord = [G.nodes[v]['y'], G.nodes[v]['x']]
+
+        if surface != current_surface:
+            # Flush previous run
+            if current_coords:
+                current_coords.append(u_coord)          # bridge to new segment
+                segments.append({
+                    'surface': current_surface,
+                    'coords':  current_coords,
+                })
+            current_surface = surface
+            current_coords  = [u_coord, v_coord]
+        else:
+            current_coords.append(v_coord)
+
+    # Flush final run
+    if current_coords and current_surface:
+        segments.append({
+            'surface': current_surface,
+            'coords':  current_coords,
+        })
+
+    return segments
+
+
 def build_route_info(
         G,
         node_path: List[int],
@@ -1006,6 +1054,9 @@ def build_route_info(
     else:
         est_min = round(raw_min)
 
+    # ── Build colored segments for surface inspection ─────────────────────────
+    colored_segments = _build_colored_segments(G, node_path)
+
     return {
         'distance_km':          round(total_dist_m / 1000, 1),
         'estimated_minutes':    est_min,
@@ -1021,6 +1072,7 @@ def build_route_info(
         'traffic_status':       traffic_status,
         'traffic_delay_minutes': traffic_delay_minutes,
         'surface_source':       _compute_surface_source(G, node_path),
+        'colored_segments':     colored_segments,
     }
 
 

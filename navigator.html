@@ -498,6 +498,44 @@
     }
     #edit-locations-btn:hover { color:#f0f0f0; border-color:#444; }
 
+    /* ── Route Inspection ── */
+    .route-card { cursor: pointer; transition: all 0.25s ease; }
+    .route-card.card-selected {
+      border-left-width: 4px;
+      box-shadow: 0 0 20px rgba(55,138,221,0.25);
+      transform: translateY(-1px);
+    }
+    .route-card.safest.card-selected {
+      box-shadow: 0 0 20px rgba(99,153,34,0.25);
+    }
+    .route-card.card-faded {
+      opacity: 0.5; transform: none; filter: saturate(0.4);
+    }
+    .inspect-label {
+      font-size: 11px; color: #888; margin-left: auto;
+      display: flex; align-items: center; gap: 4px;
+    }
+    #segment-legend {
+      display: flex; flex-wrap: wrap; gap: 10px;
+      padding: 10px 14px; background: #1a1a1a;
+      border-radius: 8px; margin-top: 8px;
+      border: 1px solid #2a2a2a;
+      animation: fadeIn 0.25s ease;
+    }
+    .leg-item {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 12px; color: #f0f0f0;
+    }
+    .leg-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+    .leg-hint { width:100%; font-size:10px; color:#888; margin-top:2px; }
+    .surface-tooltip {
+      background: #1e1e1e !important; border: 1px solid #2a2a2a !important;
+      color: #f0f0f0 !important; font-size: 12px !important;
+      padding: 4px 10px !important; border-radius: 6px !important;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4) !important;
+    }
+    .surface-tooltip::before { display: none !important; }
+
     /* ── Responsive ── */
     @media (max-width:767px) {
       .app { flex-direction:column; }
@@ -722,6 +760,17 @@
     let originMarker    = null;
     let destMarker      = null;
     let currentData     = null;
+
+    /* Route inspection state */
+    let _fastPolylines  = [];      // array of L.polyline (one per segment)
+    let _safePolylines  = [];
+    let _selectedRoute  = null;    // 'fastest' | 'safest' | null
+
+    const SURFACE_COLORS = {
+      'paved':   '#639922',
+      'unpaved': '#BA7517',
+      'damaged': '#E24B4A',
+    };
 
     /* Pin confirmation state */
     let _pinOriginMarker = null;
@@ -1106,6 +1155,11 @@
     function clearMap() {
       [fastestPolyline, safestPolyline, purplePolyline, originMarker, destMarker].forEach(l => { if (l) map.removeLayer(l); });
       fastestPolyline = safestPolyline = purplePolyline = originMarker = destMarker = null;
+      _fastPolylines.forEach(p => p.remove());
+      _safePolylines.forEach(p => p.remove());
+      _fastPolylines = []; _safePolylines = [];
+      _selectedRoute = null;
+      document.getElementById('segment-legend')?.remove();
       cleanupPins();
     }
 
@@ -1128,39 +1182,126 @@
       return L.circleMarker(latlng, { radius:8, fillColor:color, color:'#ffffff', weight:2, fillOpacity:1 }).addTo(map);
     }
 
-    /* ════════════════════════ Highlight Logic ═════════════════ */
-    function highlightRoute(which) {
-      const isSame = purplePolyline !== null;
-      $cardFast.classList.remove('highlighted','dimmed','pulse');
-      $cardSafe.classList.remove('highlighted','dimmed','pulse');
-      if (isSame) {
-        which === 'fastest'
-          ? ($cardFast.classList.add('highlighted','pulse'), $cardSafe.classList.add('dimmed'))
-          : ($cardSafe.classList.add('highlighted','pulse'), $cardFast.classList.add('dimmed'));
-        return;
-      }
-      if (which === 'fastest') {
-        if (fastestPolyline) fastestPolyline.setStyle({ weight:8, opacity:1 });
-        if (safestPolyline)  safestPolyline.setStyle({ weight:5, opacity:0.3 });
-        $cardFast.classList.add('highlighted','pulse');
-        $cardSafe.classList.add('dimmed');
+    /* ════════════════════════ Route Inspection ════════════════ */
+    function selectRoute(type) {
+      if (_selectedRoute === type) { deselectAllRoutes(); return; }
+      _selectedRoute = type;
+
+      const selData   = type === 'fastest' ? currentData.fastest : currentData.safest;
+      const otherData = type === 'fastest' ? currentData.safest  : currentData.fastest;
+      const selColor  = type === 'fastest' ? '#378ADD' : '#639922';
+      const othColor  = type === 'fastest' ? '#639922' : '#378ADD';
+
+      // Remove all existing polylines
+      _fastPolylines.forEach(p => p.remove());
+      _safePolylines.forEach(p => p.remove());
+      [fastestPolyline, safestPolyline, purplePolyline].forEach(l => { if (l) map.removeLayer(l); });
+      fastestPolyline = safestPolyline = purplePolyline = null;
+
+      // Draw OTHER route as dim solid line
+      const dimPoly = L.polyline(otherData.polyline,
+        { color: othColor, weight: 3, opacity: 0.25, lineCap:'round', lineJoin:'round' }
+      ).addTo(map);
+      dimPoly.on('click', (e) => { L.DomEvent.stopPropagation(e); selectRoute(type === 'fastest' ? 'safest' : 'fastest'); });
+
+      // Draw SELECTED route as colored segments
+      const newPolys = [];
+      if (!selData.colored_segments || selData.colored_segments.length === 0) {
+        const fb = L.polyline(selData.polyline,
+          { color: selColor, weight: 7, opacity: 1.0, lineCap:'round', lineJoin:'round' }
+        ).addTo(map);
+        fb.on('click', (e) => { L.DomEvent.stopPropagation(e); selectRoute(type); });
+        newPolys.push(fb);
       } else {
-        if (safestPolyline)  safestPolyline.setStyle({ weight:8, opacity:1 });
-        if (fastestPolyline) fastestPolyline.setStyle({ weight:5, opacity:0.3 });
-        $cardSafe.classList.add('highlighted','pulse');
-        $cardFast.classList.add('dimmed');
+        selData.colored_segments.forEach(seg => {
+          if (!seg.coords || seg.coords.length < 2) return;
+          const color = SURFACE_COLORS[seg.surface] || '#888';
+          const poly = L.polyline(seg.coords, {
+            color, weight: 7, opacity: 1.0, lineCap:'round', lineJoin:'round',
+          }).addTo(map);
+          poly.bindTooltip(
+            seg.surface.charAt(0).toUpperCase() + seg.surface.slice(1) + ' road',
+            { sticky: true, className: 'surface-tooltip' }
+          );
+          poly.on('click', (e) => { L.DomEvent.stopPropagation(e); selectRoute(type); });
+          newPolys.push(poly);
+        });
+      }
+
+      if (type === 'fastest') {
+        _fastPolylines = newPolys;
+        _safePolylines = [dimPoly];
+      } else {
+        _safePolylines = newPolys;
+        _fastPolylines = [dimPoly];
+      }
+
+      updateCardSelection(type);
+      showSegmentLegend();
+    }
+
+    function deselectAllRoutes() {
+      _selectedRoute = null;
+      _fastPolylines.forEach(p => p.remove());
+      _safePolylines.forEach(p => p.remove());
+      _fastPolylines = []; _safePolylines = [];
+      [fastestPolyline, safestPolyline, purplePolyline].forEach(l => { if (l) map.removeLayer(l); });
+      fastestPolyline = safestPolyline = purplePolyline = null;
+
+      if (!currentData) return;
+      const f = currentData.fastest, s = currentData.safest;
+      const identical = polylinesIdentical(f.polyline, s.polyline);
+      if (identical) {
+        purplePolyline = L.polyline(f.polyline, { color:'#7F77DD', weight:5, opacity:0.8, lineCap:'round', lineJoin:'round' }).addTo(map);
+        purplePolyline.on('click', (e) => { L.DomEvent.stopPropagation(e); selectRoute('fastest'); });
+      } else {
+        safestPolyline = L.polyline(s.polyline, { color:'#639922', weight:5, opacity:0.8, lineCap:'round', lineJoin:'round' }).addTo(map);
+        fastestPolyline = L.polyline(f.polyline, { color:'#378ADD', weight:5, opacity:0.8, lineCap:'round', lineJoin:'round' }).addTo(map);
+        fastestPolyline.on('click', (e) => { L.DomEvent.stopPropagation(e); selectRoute('fastest'); });
+        safestPolyline.on('click',  (e) => { L.DomEvent.stopPropagation(e); selectRoute('safest'); });
+      }
+      updateCardSelection(null);
+      document.getElementById('segment-legend')?.remove();
+    }
+
+    function updateCardSelection(type) {
+      $cardFast.classList.remove('card-selected', 'card-faded', 'highlighted', 'dimmed', 'pulse');
+      $cardSafe.classList.remove('card-selected', 'card-faded', 'highlighted', 'dimmed', 'pulse');
+      $cardFast.querySelector('.inspect-label')?.remove();
+      $cardSafe.querySelector('.inspect-label')?.remove();
+
+      if (type === 'fastest') {
+        $cardFast.classList.add('card-selected');
+        $cardSafe.classList.add('card-faded');
+        const lbl = document.createElement('div');
+        lbl.className = 'inspect-label';
+        lbl.innerHTML = '🔍 Inspecting';
+        $cardFast.querySelector('.card-header').appendChild(lbl);
+      } else if (type === 'safest') {
+        $cardSafe.classList.add('card-selected');
+        $cardFast.classList.add('card-faded');
+        const lbl = document.createElement('div');
+        lbl.className = 'inspect-label';
+        lbl.innerHTML = '🔍 Inspecting';
+        $cardSafe.querySelector('.card-header').appendChild(lbl);
       }
     }
 
-    function resetHighlights() {
-      if (fastestPolyline) fastestPolyline.setStyle({ weight:5, opacity:0.8 });
-      if (safestPolyline)  safestPolyline.setStyle({ weight:5, opacity:0.8 });
-      $cardFast.classList.remove('highlighted','dimmed','pulse');
-      $cardSafe.classList.remove('highlighted','dimmed','pulse');
+    function showSegmentLegend() {
+      document.getElementById('segment-legend')?.remove();
+      const legend = document.createElement('div');
+      legend.id = 'segment-legend';
+      legend.innerHTML = `
+        <span class="leg-item"><span class="leg-dot" style="background:#639922"></span>Paved</span>
+        <span class="leg-item"><span class="leg-dot" style="background:#BA7517"></span>Unpaved</span>
+        <span class="leg-item"><span class="leg-dot" style="background:#E24B4A"></span>Damaged</span>
+        <span class="leg-hint">Click route to inspect · Click again to reset</span>
+      `;
+      $results.appendChild(legend);
     }
 
-    $cardFast.addEventListener('click', () => highlightRoute('fastest'));
-    $cardSafe.addEventListener('click', () => highlightRoute('safest'));
+    $cardFast.addEventListener('click', () => selectRoute('fastest'));
+    $cardSafe.addEventListener('click', () => selectRoute('safest'));
 
     /* ════════════════════════ ETA Computation ═════════════════ */
     function computeETA(base_minutes) {
@@ -1284,14 +1425,12 @@
       const identical = polylinesIdentical(f.polyline, s.polyline);
       if (identical) {
         purplePolyline = L.polyline(f.polyline, { color:'#7F77DD', weight:5, opacity:0.8, lineCap:'round', lineJoin:'round' }).addTo(map);
-        purplePolyline.on('click', () => {
-          $cardFast.classList.contains('highlighted') ? highlightRoute('safest') : highlightRoute('fastest');
-        });
+        purplePolyline.on('click', (e) => { L.DomEvent.stopPropagation(e); selectRoute('fastest'); });
       } else {
         safestPolyline = L.polyline(s.polyline, { color:'#639922', weight:5, opacity:0.8, lineCap:'round', lineJoin:'round' }).addTo(map);
         fastestPolyline = L.polyline(f.polyline, { color:'#378ADD', weight:5, opacity:0.8, lineCap:'round', lineJoin:'round' }).addTo(map);
-        fastestPolyline.on('click', e => { L.DomEvent.stopPropagation(e); highlightRoute('fastest'); $cardFast.scrollIntoView({behavior:'smooth',block:'nearest'}); });
-        safestPolyline.on('click',  e => { L.DomEvent.stopPropagation(e); highlightRoute('safest');  $cardSafe.scrollIntoView({behavior:'smooth',block:'nearest'}); });
+        fastestPolyline.on('click', (e) => { L.DomEvent.stopPropagation(e); selectRoute('fastest'); $cardFast.scrollIntoView({behavior:'smooth',block:'nearest'}); });
+        safestPolyline.on('click',  (e) => { L.DomEvent.stopPropagation(e); selectRoute('safest');  $cardSafe.scrollIntoView({behavior:'smooth',block:'nearest'}); });
       }
 
       originMarker = makeCircleMarker(data.origin_coords, '#378ADD');
@@ -1299,7 +1438,8 @@
 
       const allCoords = [...f.polyline, ...s.polyline, data.origin_coords, data.destination_coords];
       map.fitBounds(L.latLngBounds(allCoords), { padding:[40,40] });
-      resetHighlights();
+      _selectedRoute = null;
+      updateCardSelection(null);
     }
 
     /* ════════════════════════ AUTOCOMPLETE ═════════════════════
@@ -1703,7 +1843,7 @@
     $from.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.defaultPrevented) $to.focus(); });
     $to.addEventListener('keydown',   e => { if (e.key === 'Enter' && !e.defaultPrevented) findRoutes(); });
 
-    map.on('click', resetHighlights);
+    map.on('click', deselectAllRoutes);
 
     /* ════════════════════════ GEOLOCATION BIAS ═════════════════ */
     let _userLat = null;
