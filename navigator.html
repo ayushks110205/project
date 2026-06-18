@@ -450,6 +450,54 @@
     .leaflet-control-attribution { background:rgba(22,27,34,.85) !important; color:var(--text-muted) !important; font-size:10px !important; }
     .leaflet-control-attribution a { color:var(--accent-blue) !important; }
 
+    /* ── Draggable Pin Confirmation ── */
+    .confirm-pin {
+      width: 36px; height: 36px;
+      border-radius: 50% 50% 50% 0;
+      transform: rotate(-45deg);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      cursor: grab;
+    }
+    .confirm-pin:active { cursor: grabbing; }
+    .origin-pin { background: #378ADD; border: 2px solid #ffffff; }
+    .dest-pin   { background: #E24B4A; border: 2px solid #ffffff; }
+    .pin-label {
+      transform: rotate(45deg);
+      color: white; font-size: 13px; font-weight: 600;
+    }
+    #confirm-panel {
+      margin-top: 12px;
+      animation: fadeIn 0.25s ease;
+    }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+    .confirm-header { display:flex; gap:10px; align-items:flex-start; margin-bottom:14px; }
+    .confirm-icon { font-size:20px; }
+    .confirm-title { font-size:14px; font-weight:500; color:#f0f0f0; }
+    .confirm-sub   { font-size:11px; color:#888; margin-top:2px; }
+    .confirm-location-row { display:flex; gap:10px; align-items:flex-start;
+                            padding:8px 0; border-bottom:1px solid #2a2a2a; }
+    .cloc-dot       { width:10px; height:10px; border-radius:50%;
+                      flex-shrink:0; margin-top:3px; }
+    .cloc-dot.origin { background:#378ADD; }
+    .cloc-dot.dest   { background:#E24B4A; }
+    .cloc-name  { font-size:13px; color:#f0f0f0; font-weight:500; }
+    .cloc-addr  { font-size:11px; color:#888; margin-top:2px; }
+    #confirm-route-btn {
+      width:100%; padding:10px; margin-top:14px;
+      background: linear-gradient(135deg, #378ADD, #2d6fb5);
+      color:white; border:none; border-radius:8px;
+      font-size:14px; font-weight:500; cursor:pointer;
+    }
+    #confirm-route-btn:hover { opacity:0.9; }
+    #edit-locations-btn {
+      width:100%; padding:8px; margin-top:8px;
+      background:transparent; color:#888;
+      border:1px solid #2a2a2a; border-radius:8px;
+      font-size:13px; cursor:pointer;
+    }
+    #edit-locations-btn:hover { color:#f0f0f0; border-color:#444; }
+
     /* ── Responsive ── */
     @media (max-width:767px) {
       .app { flex-direction:column; }
@@ -673,6 +721,13 @@
     let originMarker    = null;
     let destMarker      = null;
     let currentData     = null;
+
+    /* Pin confirmation state */
+    let _pinOriginMarker = null;
+    let _pinDestMarker   = null;
+    let _pinPreviewLine  = null;
+    let _confirmedOrigin = null;
+    let _confirmedDest   = null;
 
     /* ════════════════════════ Map Init ════════════════════════ */
     const map = L.map('map', { center:[20,78], zoom:5, zoomControl:true });
@@ -1009,6 +1064,16 @@
     function clearMap() {
       [fastestPolyline, safestPolyline, purplePolyline, originMarker, destMarker].forEach(l => { if (l) map.removeLayer(l); });
       fastestPolyline = safestPolyline = purplePolyline = originMarker = destMarker = null;
+      cleanupPins();
+    }
+
+    function cleanupPins() {
+      if (_pinOriginMarker) { map.removeLayer(_pinOriginMarker); _pinOriginMarker = null; }
+      if (_pinDestMarker)   { map.removeLayer(_pinDestMarker);   _pinDestMarker = null; }
+      if (_pinPreviewLine)  { map.removeLayer(_pinPreviewLine);  _pinPreviewLine = null; }
+      _confirmedOrigin = _confirmedDest = null;
+      const cp = document.getElementById('confirm-panel');
+      if (cp) cp.remove();
     }
 
     function polylinesIdentical(a, b) {
@@ -1370,32 +1435,176 @@
     initAutocomplete($to,   document.getElementById('ac-dropdown-to'));
 
     /* ════════════════════════ API CALL ════════════════════════ */
-    async function findRoutes() {
-      const fromText = $from.value.trim();
-      const toText   = $to.value.trim();
-      if (!fromText || !toText) { showError('Please enter both origin and destination.'); return; }
+    async function resolveInput(input) {
+      if (input.dataset.lat && input.dataset.lng) {
+        return { lat: input.dataset.lat, lng: input.dataset.lng,
+                 name: input.value, address: '' };
+      }
+      const stateVal = document.getElementById('state-select').value;
+      const params = new URLSearchParams({ q: input.value.trim() });
+      if (stateVal) params.set('state', stateVal);
+      if (_userLat !== null) {
+        params.set('lat', _userLat.toFixed(4));
+        params.set('lng', _userLng.toFixed(4));
+      }
+      const resp = await fetch('/autocomplete?' + params.toString());
+      if (!resp.ok) throw new Error('Could not locate: ' + input.value);
+      const data = await resp.json();
+      if (!data.results || data.results.length === 0) {
+        throw new Error('Could not find \u201c' + input.value + '\u201d \u2014 try selecting from the dropdown');
+      }
+      const r = data.results[0];
+      return { lat: r.lat, lng: r.lon || r.lng, name: r.name, address: r.address || '' };
+    }
 
-      const origin      = ($from.dataset.lat && $from.dataset.lng) ? `${$from.dataset.lat},${$from.dataset.lng}` : fromText;
-      const destination = ($to.dataset.lat   && $to.dataset.lng)   ? `${$to.dataset.lat},${$to.dataset.lng}`   : toText;
+    function showPinConfirmation(orig, dest) {
+      clearMap();
+      hide($error); hide($results); hide($mlBadge); hide($progress);
 
+      const oLat = parseFloat(orig.lat), oLng = parseFloat(orig.lng);
+      const dLat = parseFloat(dest.lat), dLng = parseFloat(dest.lng);
+      _confirmedOrigin = { lat: oLat, lng: oLng };
+      _confirmedDest   = { lat: dLat, lng: dLng };
+
+      // Origin pin (blue A)
+      const originIcon = L.divIcon({
+        className: '',
+        html: '<div class="confirm-pin origin-pin"><div class="pin-label">A</div></div>',
+        iconSize: [36, 36], iconAnchor: [18, 36],
+      });
+      _pinOriginMarker = L.marker([oLat, oLng], { draggable: true, icon: originIcon }).addTo(map);
+      _pinOriginMarker.bindTooltip(
+        `<b>${escHtml(orig.name)}</b><br><span style="font-size:11px;color:#aaa">Drag to adjust</span>`,
+        { permanent: true, direction: 'top', offset: [0, -36] }
+      );
+
+      // Dest pin (red B)
+      const destIcon = L.divIcon({
+        className: '',
+        html: '<div class="confirm-pin dest-pin"><div class="pin-label">B</div></div>',
+        iconSize: [36, 36], iconAnchor: [18, 36],
+      });
+      _pinDestMarker = L.marker([dLat, dLng], { draggable: true, icon: destIcon }).addTo(map);
+      _pinDestMarker.bindTooltip(
+        `<b>${escHtml(dest.name)}</b><br><span style="font-size:11px;color:#aaa">Drag to adjust</span>`,
+        { permanent: true, direction: 'top', offset: [0, -36] }
+      );
+
+      // Dashed preview line
+      _pinPreviewLine = L.polyline(
+        [[oLat, oLng], [dLat, dLng]],
+        { color: '#888', weight: 2, dashArray: '6 6', opacity: 0.5 }
+      ).addTo(map);
+
+      // Fit map
+      map.fitBounds([[oLat, oLng], [dLat, dLng]], { padding: [60, 60] });
+
+      // Drag handlers
+      _pinOriginMarker.on('drag', (e) => {
+        const p = e.target.getLatLng();
+        _pinPreviewLine.setLatLngs([[p.lat, p.lng], [_confirmedDest.lat, _confirmedDest.lng]]);
+      });
+      _pinOriginMarker.on('dragend', (e) => {
+        const p = e.target.getLatLng();
+        _confirmedOrigin = { lat: p.lat, lng: p.lng };
+        $from.value = `Pinned (${p.lat.toFixed(4)}, ${p.lng.toFixed(4)})`;
+        $from.dataset.lat = p.lat.toFixed(6);
+        $from.dataset.lng = p.lng.toFixed(6);
+        _pinOriginMarker.setTooltipContent(
+          `<b>Origin</b><br><span style="font-size:11px;color:#aaa">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>`
+        );
+        // Update confirm panel origin name
+        const el = document.getElementById('cloc-origin-name');
+        if (el) el.textContent = `Pinned (${p.lat.toFixed(4)}, ${p.lng.toFixed(4)})`;
+      });
+      _pinDestMarker.on('drag', (e) => {
+        const p = e.target.getLatLng();
+        _pinPreviewLine.setLatLngs([[_confirmedOrigin.lat, _confirmedOrigin.lng], [p.lat, p.lng]]);
+      });
+      _pinDestMarker.on('dragend', (e) => {
+        const p = e.target.getLatLng();
+        _confirmedDest = { lat: p.lat, lng: p.lng };
+        $to.value = `Pinned (${p.lat.toFixed(4)}, ${p.lng.toFixed(4)})`;
+        $to.dataset.lat = p.lat.toFixed(6);
+        $to.dataset.lng = p.lng.toFixed(6);
+        _pinDestMarker.setTooltipContent(
+          `<b>Destination</b><br><span style="font-size:11px;color:#aaa">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>`
+        );
+        const el = document.getElementById('cloc-dest-name');
+        if (el) el.textContent = `Pinned (${p.lat.toFixed(4)}, ${p.lng.toFixed(4)})`;
+      });
+
+      // Confirmation panel in left sidebar
+      const oAddr = orig.address ? orig.address.slice(0, 40) + (orig.address.length > 40 ? '\u2026' : '') : '';
+      const dAddr = dest.address ? dest.address.slice(0, 40) + (dest.address.length > 40 ? '\u2026' : '') : '';
+      $btn.style.display = 'none';
+      const panel = document.createElement('div');
+      panel.id = 'confirm-panel';
+      panel.innerHTML = `
+        <div class="confirm-header">
+          <span class="confirm-icon">📍</span>
+          <div>
+            <div class="confirm-title">Confirm locations</div>
+            <div class="confirm-sub">Drag pins on map to adjust</div>
+          </div>
+        </div>
+        <div class="confirm-location-row">
+          <div class="cloc-dot origin"></div>
+          <div class="cloc-text">
+            <div class="cloc-name" id="cloc-origin-name">${escHtml(orig.name)}</div>
+            ${oAddr ? `<div class="cloc-addr">${escHtml(oAddr)}</div>` : ''}
+          </div>
+        </div>
+        <div class="confirm-location-row">
+          <div class="cloc-dot dest"></div>
+          <div class="cloc-text">
+            <div class="cloc-name" id="cloc-dest-name">${escHtml(dest.name)}</div>
+            ${dAddr ? `<div class="cloc-addr">${escHtml(dAddr)}</div>` : ''}
+          </div>
+        </div>
+        <button id="confirm-route-btn">✓ Confirm & Find Routes</button>
+        <button id="edit-locations-btn">← Edit locations</button>
+      `;
+      $btn.parentNode.insertBefore(panel, $btn.nextSibling);
+
+      // Confirm button
+      document.getElementById('confirm-route-btn').addEventListener('click', () => {
+        const finalOrigin = `${_confirmedOrigin.lat.toFixed(6)},${_confirmedOrigin.lng.toFixed(6)}`;
+        const finalDest   = `${_confirmedDest.lat.toFixed(6)},${_confirmedDest.lng.toFixed(6)}`;
+        $from.dataset.lat = _confirmedOrigin.lat.toFixed(6);
+        $from.dataset.lng = _confirmedOrigin.lng.toFixed(6);
+        $to.dataset.lat   = _confirmedDest.lat.toFixed(6);
+        $to.dataset.lng   = _confirmedDest.lng.toFixed(6);
+        cleanupPins();
+        $btn.style.display = '';
+        callNavigateAPI(finalOrigin, finalDest);
+      });
+
+      // Edit button
+      document.getElementById('edit-locations-btn').addEventListener('click', () => {
+        cleanupPins();
+        $btn.style.display = '';
+        delete $from.dataset.lat; delete $from.dataset.lng;
+        delete $to.dataset.lat;   delete $to.dataset.lng;
+        $from.focus();
+      });
+    }
+
+    async function callNavigateAPI(origin, destination) {
       setLoadingOn();
       _navApiInProgress = true;
-
       let responseData = null;
       let errorMsg     = null;
-
       try {
         const res = await fetch(window.location.origin + '/navigate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ origin, destination, vehicle: selectedVehicle })
         });
-
         if (res.ok) {
           responseData = await res.json();
         } else {
           const errData = await res.json().catch(() => ({}));
-          // FastAPI uses {detail:...}, our custom errors use {error:...}
           const detail = errData.detail || errData.error || null;
           console.error('Navigate error', res.status, errData);
           if (res.status === 400) {
@@ -1407,12 +1616,10 @@
           }
         }
       } catch (err) {
-        errorMsg = 'Network error — could not reach the server.';
+        errorMsg = 'Network error \u2014 could not reach the server.';
       }
-
       _navApiInProgress = false;
       setLoadingOff();
-
       if (errorMsg) {
         finishProgress(true, () => showError(errorMsg));
       } else {
@@ -1420,6 +1627,31 @@
           show($mlBadge);
           renderResults(responseData);
         });
+      }
+    }
+
+    async function findRoutes() {
+      const fromText = $from.value.trim();
+      const toText   = $to.value.trim();
+      if (!fromText || !toText) { showError('Please enter both origin and destination.'); return; }
+
+      // Show loading state on button
+      $btn.disabled = true;
+      $btn.textContent = 'Finding locations\u2026';
+      hide($error); hide($results);
+
+      try {
+        const [orig, dest] = await Promise.all([
+          resolveInput($from),
+          resolveInput($to),
+        ]);
+        $btn.disabled = false;
+        $btn.textContent = 'Find Routes';
+        showPinConfirmation(orig, dest);
+      } catch (err) {
+        $btn.disabled = false;
+        $btn.textContent = 'Find Routes';
+        showError(err.message || 'Could not locate one or both places.');
       }
     }
 
