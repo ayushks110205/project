@@ -563,6 +563,7 @@
               <option value="Puducherry">Puducherry</option>
             </optgroup>
           </select>
+          <div class="state-boundary-hint" id="state-boundary-hint" style="font-size:11px;color:#888;margin-top:4px;height:14px;"></div>
         </div>
 
         <!-- Input Section -->
@@ -822,51 +823,92 @@
       'Puducherry':         [[11.6,79.6],[12.1,80.2]],
     };
 
-    let _stateBoundaryLayer = null;   // current state outline rectangle
+    let _stateBoundaryLayer = null;   // GeoJSON polygon of state boundary
     let _stateOverlayLayer  = null;   // dark overlay outside state
+    let _boundaryFetchId    = 0;      // cancel stale fetches
 
-    function zoomToState(stateName) {
+    async function fetchStateBoundary(stateName) {
+      const query = encodeURIComponent(stateName + ', India');
+      const url = `https://nominatim.openstreetmap.org/search` +
+                  `?q=${query}&format=geojson&limit=1&polygon_geojson=1`;
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': 'RoadSense/2.0 (huggingface.co)' }
+      });
+      const data = await resp.json();
+      if (!data.features || data.features.length === 0) return null;
+      return data.features[0].geometry;
+    }
+
+    async function zoomToState(stateName) {
+      const hint = document.getElementById('state-boundary-hint');
+
       // Remove old layers
       if (_stateBoundaryLayer) { map.removeLayer(_stateBoundaryLayer); _stateBoundaryLayer = null; }
       if (_stateOverlayLayer)  { map.removeLayer(_stateOverlayLayer);  _stateOverlayLayer  = null; }
 
       if (!stateName || !STATE_BOUNDS[stateName]) {
-        // Reset to India view — unlock pan AND zoom
         map.setMaxBounds(null);
         map.setMinZoom(4);
         map.setView([20, 78], 5, { animate: true, duration: 0.8 });
+        if (hint) hint.textContent = '';
         return;
       }
 
       const bounds = L.latLngBounds(STATE_BOUNDS[stateName]);
 
-      // 1. Fit map to state with smooth animation
+      // 1. Instant zoom using rectangular bounds
       map.fitBounds(bounds, { padding: [24, 24], animate: true, duration: 0.9 });
-
-      // 2. Lock panning tightly to state
       map.setMaxBounds(bounds.pad(0.15));
+      map.once('moveend', function () { map.setMinZoom(map.getZoom()); });
 
-      // 3. Lock minZoom AFTER fitBounds settles — prevents zooming out of the state
-      map.once('moveend', function () {
-        map.setMinZoom(map.getZoom());
-      });
+      // 2. Show loading hint & fetch real polygon boundary
+      if (hint) hint.textContent = 'Loading state boundary...';
+      const fetchId = ++_boundaryFetchId;
 
-      // 4. Draw dashed blue boundary rectangle
-      _stateBoundaryLayer = L.rectangle(bounds, {
-        color:     '#378ADD',
-        weight:    2.5,
-        opacity:   0.9,
-        fill:      false,
-        dashArray: '6 4',
-      }).addTo(map);
+      try {
+        const geometry = await fetchStateBoundary(stateName);
+        if (fetchId !== _boundaryFetchId) return; // stale — user changed state
+        if (hint) hint.textContent = '';
+        if (!geometry) return;
 
-      // 5. Dark vignette over the rest of the world
-      _stateOverlayLayer = L.rectangle(
-        [[-90,-180],[90,180]],
-        { color:'none', weight:0, fillColor:'#0d1117', fillOpacity:0.45, interactive:false }
-      ).addTo(map);
+        // Draw real polygon boundary
+        _stateBoundaryLayer = L.geoJSON(
+          { type: 'Feature', geometry: geometry },
+          {
+            style: {
+              color: '#378ADD',
+              weight: 2,
+              opacity: 0.7,
+              fillColor: '#378ADD',
+              fillOpacity: 0.04,
+              dashArray: '6 4',
+            }
+          }
+        ).addTo(map);
 
-      _stateBoundaryLayer.bringToFront();
+        // Dark vignette over rest of world
+        _stateOverlayLayer = L.rectangle(
+          [[-90,-180],[90,180]],
+          { color:'none', weight:0, fillColor:'#0d1117', fillOpacity:0.45, interactive:false }
+        ).addTo(map);
+
+        _stateBoundaryLayer.bringToFront();
+
+        // Re-fit to actual polygon bounds (more accurate than rectangle)
+        map.fitBounds(_stateBoundaryLayer.getBounds(), { padding: [24, 24], animate: true, duration: 0.6 });
+        map.setMaxBounds(_stateBoundaryLayer.getBounds().pad(0.15));
+        map.once('moveend', function () { map.setMinZoom(map.getZoom()); });
+
+      } catch (err) {
+        if (fetchId !== _boundaryFetchId) return;
+        if (hint) hint.textContent = '';
+        console.log('Boundary fetch failed:', err.message);
+        // Fallback: draw rectangle if polygon fetch fails
+        _stateBoundaryLayer = L.rectangle(bounds, {
+          color: '#378ADD', weight: 2.5, opacity: 0.9,
+          fill: false, dashArray: '6 4',
+        }).addTo(map);
+      }
     }
 
     // Attach to state dropdown
