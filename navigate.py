@@ -1195,8 +1195,14 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
         surface = data.get('ml_surface', 'unpaved')
         passable = data.get('passable', True)
 
-        # Fastest: raw length (huge penalty if impassable)
-        data['weight_fastest'] = (length if passable
+        # Fastest: time-based weight (length / speed) so it minimizes travel TIME
+        highway = data.get('highway', 'residential')
+        if isinstance(highway, list):
+            highway = highway[0]
+        speed_kmh = _SPEED_DEFAULTS_KMH.get(highway, 20)
+        speed_kmh = min(speed_kmh, _VEHICLE_SPEED_CAP_KMH.get(vehicle, 60))
+        speed_ms  = speed_kmh / 3.6
+        data['weight_fastest'] = ((length / speed_ms) if passable
                                   else _IMPASSABLE_COST + length)
 
         # Safest: damage-weighted (huge penalty if impassable)
@@ -1255,6 +1261,20 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
     # ── 12. Build response (traffic already fetched) ──────────────────────────
     fastest_info = build_route_info(G, fastest_path, vehicle, traffic_mults=fast_traffic)
     safest_info  = build_route_info(G, safest_path,  vehicle, traffic_mults=safe_traffic)
+
+    # ── 12b. Enforce label invariant: "fastest" must have fewer minutes ────────
+    if safest_info['estimated_minutes'] < fastest_info['estimated_minutes']:
+        fastest_info, safest_info = safest_info, fastest_info
+        print("  🔄 Swapped: safest was actually faster — labels corrected")
+
+    # If fastest has more damage but time diff ≤ 5 min, prefer the safer option
+    fast_damaged = fastest_info['segments']['damaged_km']
+    safe_damaged = safest_info['segments']['damaged_km']
+    time_diff = safest_info['estimated_minutes'] - fastest_info['estimated_minutes']
+    if fast_damaged > safe_damaged and time_diff <= 5:
+        fastest_info, safest_info = safest_info, fastest_info
+        print(f"  🔄 Swapped: fastest had more damage ({fast_damaged:.1f} vs {safe_damaged:.1f} km) "
+              f"with only {time_diff} min advantage — preferring safer option")
 
     print(f"  ✅ Fastest: {fastest_info['distance_km']} km, "
           f"{fastest_info['estimated_minutes']} min "
