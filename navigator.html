@@ -536,6 +536,16 @@
     }
     .surface-tooltip::before { display: none !important; }
 
+    /* ── Gap Warning ── */
+    .gap-warning {
+      font-size: 11px; color: #BA7517;
+      background: rgba(186,117,23,0.1);
+      border: 1px solid rgba(186,117,23,0.2);
+      border-radius: 6px; padding: 6px 10px;
+      margin-top: 8px;
+      display: flex; align-items: flex-start; gap: 6px;
+    }
+
     /* ── Responsive ── */
     @media (max-width:767px) {
       .app { flex-direction:column; }
@@ -765,6 +775,7 @@
     let _fastPolylines  = [];      // array of L.polyline (one per segment)
     let _safePolylines  = [];
     let _selectedRoute  = null;    // 'fastest' | 'safest' | null
+    let _gapLines       = [];      // dashed connector lines for last-mile gaps
 
     const SURFACE_COLORS = {
       'paved':   '#639922',
@@ -1159,6 +1170,8 @@
       _safePolylines.forEach(p => p.remove());
       _fastPolylines = []; _safePolylines = [];
       _selectedRoute = null;
+      _gapLines.forEach(l => l.remove());
+      _gapLines = [];
       document.getElementById('segment-legend')?.remove();
       cleanupPins();
     }
@@ -1440,6 +1453,54 @@
       map.fitBounds(L.latLngBounds(allCoords), { padding:[40,40] });
       _selectedRoute = null;
       updateCardSelection(null);
+
+      /* ── Last-mile gap detection ── */
+      _gapLines.forEach(l => l.remove()); _gapLines = [];
+      document.querySelectorAll('.gap-warning').forEach(el => el.remove());
+
+      function haversineMetres(lat1, lng1, lat2, lng2) {
+        const R = 6371000;
+        const dLat = (lat2-lat1) * Math.PI/180;
+        const dLng = (lng2-lng1) * Math.PI/180;
+        const a = Math.sin(dLat/2)**2 +
+                  Math.cos(lat1*Math.PI/180) *
+                  Math.cos(lat2*Math.PI/180) *
+                  Math.sin(dLng/2)**2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      }
+
+      const origCoords = data.origin_coords;
+      const destCoords = data.destination_coords;
+      const routeStart = f.polyline[0];
+      const routeEnd   = f.polyline[f.polyline.length - 1];
+
+      const originGapM = haversineMetres(routeStart[0], routeStart[1], origCoords[0], origCoords[1]);
+      const destGapM   = haversineMetres(routeEnd[0], routeEnd[1], destCoords[0], destCoords[1]);
+
+      if (originGapM > 150) {
+        const gl = L.polyline([routeStart, origCoords],
+          { color:'#888888', weight:2, opacity:0.7, dashArray:'6 5' }
+        ).addTo(map);
+        gl.bindTooltip(`No road data for first ${Math.round(originGapM)}m`, { sticky:true, className:'surface-tooltip' });
+        _gapLines.push(gl);
+      }
+      if (destGapM > 150) {
+        const gl = L.polyline([routeEnd, destCoords],
+          { color:'#888888', weight:2, opacity:0.7, dashArray:'6 5' }
+        ).addTo(map);
+        gl.bindTooltip(`No road data for final ${Math.round(destGapM)}m`, { sticky:true, className:'surface-tooltip' });
+        _gapLines.push(gl);
+      }
+
+      // Add card warnings for significant gaps
+      if (originGapM > 150 || destGapM > 150) {
+        const parts = [];
+        if (originGapM > 150) parts.push(`${Math.round(originGapM)}m from origin`);
+        if (destGapM > 150)   parts.push(`${Math.round(destGapM)}m from destination`);
+        const warnHtml = `<div class="gap-warning">⚠️ Route ends ${parts.join(' and ')} — limited road data in this area</div>`;
+        document.getElementById('fast-warnings')?.insertAdjacentHTML('beforeend', warnHtml);
+        document.getElementById('safe-warnings')?.insertAdjacentHTML('beforeend', warnHtml);
+      }
     }
 
     /* ════════════════════════ AUTOCOMPLETE ═════════════════════
