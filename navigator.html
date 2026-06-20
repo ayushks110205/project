@@ -546,6 +546,28 @@
       display: flex; align-items: flex-start; gap: 6px;
     }
 
+    /* ── Single Route Mode ── */
+    .single-route-card {
+      background: linear-gradient(135deg, #1c2330 0%, #251e3a 100%) !important;
+      border-left: 4px solid #7F77DD !important;
+      box-shadow: -2px 0 12px rgba(127,119,221,0.15) !important;
+    }
+    .single-route-card.card-selected {
+      box-shadow: 0 0 20px rgba(127,119,221,0.3) !important;
+    }
+    .single-route-banner {
+      display: flex; align-items: flex-start; gap: 8px;
+      background: rgba(127,119,221,0.1);
+      border: 1px solid rgba(127,119,221,0.2);
+      border-radius: 6px; padding: 8px 10px;
+      font-size: 11px; color: #a9a4e8;
+      margin: 8px 0; line-height: 1.4;
+    }
+    .single-route-hint {
+      font-size: 11px; color: #888;
+      text-align: center; padding: 6px 0 2px;
+    }
+
     /* ── Responsive ── */
     @media (max-width:767px) {
       .app { flex-direction:column; }
@@ -711,6 +733,7 @@
             <div class="warnings" id="fast-warnings"></div>
           </article>
 
+          <div id="safest-card-container">
           <article class="route-card safest" id="card-safest" tabindex="0">
             <div class="card-header">
               <span class="card-icon">🛡️</span>
@@ -741,6 +764,7 @@
             <div class="warnings" id="safe-warnings"></div>
             <div class="extra-note" id="safe-extra" style="display:none;"></div>
           </article>
+          </div>
         </section>
 
       </div>
@@ -1173,6 +1197,14 @@
       _gapLines.forEach(l => l.remove());
       _gapLines = [];
       document.getElementById('segment-legend')?.remove();
+      // Single-route cleanup
+      document.getElementById('safest-card-container').style.display = '';
+      document.querySelector('.single-route-banner')?.remove();
+      document.querySelector('.single-route-hint')?.remove();
+      $cardFast.classList.remove('single-route-card');
+      $cardFast.querySelector('.card-title').textContent = 'Fastest Route';
+      $cardFast.querySelector('.card-icon').textContent = '⚡';
+      $cardFast.onclick = null;
       cleanupPins();
     }
 
@@ -1313,8 +1345,51 @@
       $results.appendChild(legend);
     }
 
-    $cardFast.addEventListener('click', () => selectRoute('fastest'));
+    $cardFast.addEventListener('click', () => { if (!$cardFast.classList.contains('single-route-card')) selectRoute('fastest'); });
     $cardSafe.addEventListener('click', () => selectRoute('safest'));
+
+    /* ════════════════════════ Single Route Mode ═══════════════ */
+    function routesAreIdentical(fastest, safest) {
+      if (fastest.distance_km !== safest.distance_km) return false;
+      if (fastest.estimated_minutes !== safest.estimated_minutes) return false;
+      if (!fastest.polyline || !safest.polyline) return false;
+      if (fastest.polyline.length !== safest.polyline.length) return false;
+      const fp = fastest.polyline, sp = safest.polyline;
+      const firstMatch = fp[0][0] === sp[0][0] && fp[0][1] === sp[0][1];
+      const lastMatch  = fp[fp.length-1][0] === sp[sp.length-1][0] && fp[fp.length-1][1] === sp[sp.length-1][1];
+      return firstMatch && lastMatch;
+    }
+
+    function inspectSingleRoute(routeData) {
+      if (_selectedRoute === 'single') {
+        _selectedRoute = null;
+        _fastPolylines.forEach(p => p.remove());
+        const singlePoly = L.polyline(routeData.polyline, { color:'#7F77DD', weight:5, opacity:0.85, lineCap:'round', lineJoin:'round' }).addTo(map);
+        singlePoly.on('click', (e) => { L.DomEvent.stopPropagation(e); inspectSingleRoute(routeData); });
+        _fastPolylines = [singlePoly];
+        $cardFast.classList.remove('card-selected');
+        return;
+      }
+      _selectedRoute = 'single';
+      _fastPolylines.forEach(p => p.remove());
+      _fastPolylines = [];
+      if (!routeData.colored_segments || routeData.colored_segments.length === 0) {
+        const fb = L.polyline(routeData.polyline, { color:'#7F77DD', weight:7, opacity:1.0, lineCap:'round', lineJoin:'round' }).addTo(map);
+        fb.on('click', (e) => { L.DomEvent.stopPropagation(e); inspectSingleRoute(routeData); });
+        _fastPolylines = [fb];
+      } else {
+        routeData.colored_segments.forEach(seg => {
+          if (!seg.coords || seg.coords.length < 2) return;
+          const color = SURFACE_COLORS[seg.surface] || '#888';
+          const poly = L.polyline(seg.coords, { color, weight:7, opacity:1.0, lineCap:'round', lineJoin:'round' }).addTo(map);
+          poly.bindTooltip(seg.surface.charAt(0).toUpperCase() + seg.surface.slice(1) + ' road', { sticky:true, className:'surface-tooltip' });
+          poly.on('click', (e) => { L.DomEvent.stopPropagation(e); inspectSingleRoute(routeData); });
+          _fastPolylines.push(poly);
+        });
+      }
+      $cardFast.classList.add('card-selected');
+      showSegmentLegend();
+    }
 
     /* ════════════════════════ ETA Computation ═════════════════ */
     function computeETA(base_minutes) {
@@ -1435,11 +1510,36 @@
 
       /* Draw map */
       clearMap();
-      const identical = polylinesIdentical(f.polyline, s.polyline);
+      const identical = routesAreIdentical(f, s);
+
       if (identical) {
-        purplePolyline = L.polyline(f.polyline, { color:'#7F77DD', weight:5, opacity:0.8, lineCap:'round', lineJoin:'round' }).addTo(map);
-        purplePolyline.on('click', (e) => { L.DomEvent.stopPropagation(e); selectRoute('fastest'); });
+        /* ── Single Route Mode ── */
+        document.getElementById('safest-card-container').style.display = 'none';
+        $cardFast.classList.add('single-route-card');
+        $cardFast.querySelector('.card-title').textContent = 'Best Available Route';
+        $cardFast.querySelector('.card-icon').textContent = '🗺️';
+        // Info banner
+        if (!$cardFast.querySelector('.single-route-banner')) {
+          const banner = document.createElement('div');
+          banner.className = 'single-route-banner';
+          banner.innerHTML = '<span>ℹ️</span><span>Only one viable route found — no safer alternative available via OSM road network</span>';
+          const peakPill = $cardFast.querySelector('.peak-pill');
+          peakPill.insertAdjacentElement('afterend', banner);
+        }
+        // Hint
+        const hint = document.createElement('div');
+        hint.className = 'single-route-hint';
+        hint.textContent = '🔍 Click route or card to inspect surface conditions';
+        $results.appendChild(hint);
+        // Click handler
+        $cardFast.onclick = (e) => { if (!e.target.closest('.copy-btn')) inspectSingleRoute(f); };
+        // Purple polyline
+        purplePolyline = L.polyline(f.polyline, { color:'#7F77DD', weight:5, opacity:0.85, lineCap:'round', lineJoin:'round' }).addTo(map);
+        purplePolyline.on('click', (e) => { L.DomEvent.stopPropagation(e); inspectSingleRoute(f); });
+        _fastPolylines = [purplePolyline];
+        purplePolyline = null; // managed via _fastPolylines
       } else {
+        /* ── Dual Route Mode ── */
         safestPolyline = L.polyline(s.polyline, { color:'#639922', weight:5, opacity:0.8, lineCap:'round', lineJoin:'round' }).addTo(map);
         fastestPolyline = L.polyline(f.polyline, { color:'#378ADD', weight:5, opacity:0.8, lineCap:'round', lineJoin:'round' }).addTo(map);
         fastestPolyline.on('click', (e) => { L.DomEvent.stopPropagation(e); selectRoute('fastest'); $cardFast.scrollIntoView({behavior:'smooth',block:'nearest'}); });
@@ -1452,7 +1552,7 @@
       const allCoords = [...f.polyline, ...s.polyline, data.origin_coords, data.destination_coords];
       map.fitBounds(L.latLngBounds(allCoords), { padding:[40,40] });
       _selectedRoute = null;
-      updateCardSelection(null);
+      if (!identical) updateCardSelection(null);
 
       /* ── Last-mile gap detection ── */
       _gapLines.forEach(l => l.remove()); _gapLines = [];
