@@ -1474,8 +1474,9 @@
       const routeStart = f.polyline[0];
       const routeEnd   = f.polyline[f.polyline.length - 1];
 
-      const originGapM = haversineMetres(routeStart[0], routeStart[1], origCoords[0], origCoords[1]);
-      const destGapM   = haversineMetres(routeEnd[0], routeEnd[1], destCoords[0], destCoords[1]);
+      // Use server-provided snap gap (more accurate), fall back to haversine
+      const originGapM = data.origin_snap_gap_m ?? haversineMetres(routeStart[0], routeStart[1], origCoords[0], origCoords[1]);
+      const destGapM   = data.dest_snap_gap_m   ?? haversineMetres(routeEnd[0], routeEnd[1], destCoords[0], destCoords[1]);
 
       if (originGapM > 150) {
         const gl = L.polyline([routeStart, origCoords],

@@ -1080,12 +1080,16 @@ def build_route_info(
 # Edge-based coordinate snapping
 # =============================================================================
 
-def _snap_to_graph(G, lat: float, lng: float) -> int:
+def _snap_to_graph(G, lat: float, lng: float):
     """
     Snap a lat/lng coordinate to the nearest point on the road network.
     Uses nearest_edges() for precision, then picks the endpoint node
     of that edge that is closer to the coordinate.
     Falls back to nearest_nodes() if nearest_edges fails.
+
+    Returns:
+        ``(node_id, snap_gap_metres)`` — gap is the haversine distance
+        between the actual coordinate and the snapped node.
     """
     try:
         # ox.nearest_edges returns (u, v, key) of the closest edge
@@ -1096,11 +1100,18 @@ def _snap_to_graph(G, lat: float, lng: float) -> int:
         dist_u = ((u_d['y'] - lat)**2 + (u_d['x'] - lng)**2)**0.5
         dist_v = ((v_d['y'] - lat)**2 + (v_d['x'] - lng)**2)**0.5
 
-        return u if dist_u <= dist_v else v
-
+        node = u if dist_u <= dist_v else v
     except Exception:
         # Fallback to nearest_nodes if nearest_edges fails
-        return ox.nearest_nodes(G, lng, lat)
+        node = ox.nearest_nodes(G, lng, lat)
+
+    snapped_lat = G.nodes[node]['y']
+    snapped_lng = G.nodes[node]['x']
+    snap_gap_m  = _haversine_km(lat, lng, snapped_lat, snapped_lng) * 1000
+    return node, snap_gap_m
+
+
+_GAP_THRESHOLD_M = 300   # only expand bbox if snap gap exceeds this
 
 
 # =============================================================================
@@ -1211,8 +1222,64 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
                                  else _IMPASSABLE_COST + length * mult)
 
     # ── 9. Snap origin/destination to nearest edges ───────────────────────────
-    orig_node = _snap_to_graph(G, origin_ll[0], origin_ll[1])
-    dest_node = _snap_to_graph(G, dest_ll[0],   dest_ll[1])
+    orig_node, orig_gap = _snap_to_graph(G, origin_ll[0], origin_ll[1])
+    dest_node, dest_gap = _snap_to_graph(G, dest_ll[0],   dest_ll[1])
+    print(f"  📍 Snap gaps: origin={orig_gap:.0f}m, dest={dest_gap:.0f}m")
+
+    # ── 9b. Expand bbox toward sparse endpoints if gap is large ───────────
+    def _try_expand(G_base, coord_ll, current_node, current_gap, label):
+        """Expand bbox toward coord_ll, re-download with network_type='all',
+        and merge into G_base if it reduces the snap gap."""
+        if current_gap <= _GAP_THRESHOLD_M:
+            return G_base, current_node, current_gap
+        try:
+            n, s, e, w = bbox
+            mid_lat = (n + s) / 2
+            mid_lng = (e + w) / 2
+            # Expand 0.005° (~550m) past the coordinate in its direction
+            if coord_ll[0] > mid_lat:
+                n = max(n, coord_ll[0] + 0.005)
+            else:
+                s = min(s, coord_ll[0] - 0.005)
+            if coord_ll[1] > mid_lng:
+                e = max(e, coord_ll[1] + 0.005)
+            else:
+                w = min(w, coord_ll[1] - 0.005)
+            G_exp = ox.graph_from_bbox(bbox=(n, s, e, w),
+                                       network_type='all', retain_all=True)
+            new_node, new_gap = _snap_to_graph(G_exp, coord_ll[0], coord_ll[1])
+            if new_gap < current_gap * 0.6:
+                G_merged = nx.compose(G_base, G_exp)
+                print(f"  📍 Expansion reduced {label} gap: "
+                      f"{current_gap:.0f}m → {new_gap:.0f}m")
+                return G_merged, new_node, new_gap
+            else:
+                print(f"  📍 Expansion didn't help {label} "
+                      f"({new_gap:.0f}m), keeping original")
+        except Exception as exc:
+            print(f"  ⚠️ Bbox expansion for {label} failed: {exc}")
+        return G_base, current_node, current_gap
+
+    G, dest_node, dest_gap = _try_expand(G, dest_ll, dest_node, dest_gap, 'dest')
+    G, orig_node, orig_gap = _try_expand(G, origin_ll, orig_node, orig_gap, 'origin')
+
+    # ── 9c. Set weights on any new edges from expansion ───────────────────
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if 'weight_fastest' not in data:
+            length  = _edge_length(data)
+            surface = data.get('ml_surface', 'unpaved')
+            passable = data.get('passable', True)
+            highway = data.get('highway', 'residential')
+            if isinstance(highway, list):
+                highway = highway[0]
+            speed_kmh = _SPEED_DEFAULTS_KMH.get(highway, 20)
+            speed_kmh = min(speed_kmh, _VEHICLE_SPEED_CAP_KMH.get(vehicle, 60))
+            speed_ms  = speed_kmh / 3.6
+            data['weight_fastest'] = ((length / speed_ms) if passable
+                                      else _IMPASSABLE_COST + length)
+            mult = _DAMAGE_MULTIPLIER.get(surface, 1.4)
+            data['weight_safest'] = (length * mult if passable
+                                     else _IMPASSABLE_COST + length * mult)
 
     if orig_node not in G.nodes:
         raise ValueError("Could not snap origin to road network.")
@@ -1291,6 +1358,8 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
         'origin_coords':      list(origin_ll),
         'destination_coords': list(dest_ll),
         'ml_active':          ml_active,
+        'origin_snap_gap_m':  round(orig_gap),
+        'dest_snap_gap_m':    round(dest_gap),
         'graph_stats': {
             'nodes': G.number_of_nodes(),
             'edges': G.number_of_edges(),
