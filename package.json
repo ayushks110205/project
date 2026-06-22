@@ -1,0 +1,20 @@
+{
+  "name": "deepglobe-part-2",
+  "version": "1.0.0",
+  "description": "---\r title: DeepGlobe Satellite Road Intelligence API\r emoji: 🛰️\r colorFrom: blue\r colorTo: green\r sdk: docker\r app_port: 7860\r pinned: false\r ---",
+  "main": "roadsense.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://huggingface.co/spaces/Ayushks07/updated_road_extraction"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "docx": "^9.7.1"
+  }
+}

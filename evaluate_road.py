@@ -244,7 +244,7 @@ def run_evaluation(model_path: str,
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Evaluate road segmentation model')
-    parser.add_argument('--model', default='/kaggle/working/road_model_best.pth',
+    parser.add_argument('--model', default='/kaggle/input/datasets/ayushsingh110205/newly-made-for-improved-road-training/road_model_best.pth',
                         help='Path to model weights')
     parser.add_argument('--tta', action='store_true',
                         help='Enable Test-Time Augmentation (4-flip ensemble)')
