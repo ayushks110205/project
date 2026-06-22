@@ -1350,14 +1350,11 @@
 
     /* ════════════════════════ Single Route Mode ═══════════════ */
     function routesAreIdentical(fastest, safest) {
-      if (fastest.distance_km !== safest.distance_km) return false;
-      if (fastest.estimated_minutes !== safest.estimated_minutes) return false;
+      if (Math.abs(fastest.distance_km - safest.distance_km) > 0.05) return false;
+      if (Math.abs(fastest.estimated_minutes - safest.estimated_minutes) > 1) return false;
       if (!fastest.polyline || !safest.polyline) return false;
-      if (fastest.polyline.length !== safest.polyline.length) return false;
-      const fp = fastest.polyline, sp = safest.polyline;
-      const firstMatch = fp[0][0] === sp[0][0] && fp[0][1] === sp[0][1];
-      const lastMatch  = fp[fp.length-1][0] === sp[sp.length-1][0] && fp[fp.length-1][1] === sp[sp.length-1][1];
-      return firstMatch && lastMatch;
+      if (Math.abs(fastest.polyline.length - safest.polyline.length) > 2) return false;
+      return true;
     }
 
     function inspectSingleRoute(routeData) {
@@ -1538,6 +1535,8 @@
         purplePolyline.on('click', (e) => { L.DomEvent.stopPropagation(e); inspectSingleRoute(f); });
         _fastPolylines = [purplePolyline];
         purplePolyline = null; // managed via _fastPolylines
+        // Auto-inspect: show colored segments immediately in single-route mode
+        inspectSingleRoute(f);
       } else {
         /* ── Dual Route Mode ── */
         safestPolyline = L.polyline(s.polyline, { color:'#639922', weight:5, opacity:0.8, lineCap:'round', lineJoin:'round' }).addTo(map);
