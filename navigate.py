@@ -1225,11 +1225,9 @@ def navigate(origin: str, destination: str, vehicle: str = 'car') -> dict:
         passable = data.get('passable', True)
 
         # Fastest: time-based weight (length / speed) so it minimizes travel TIME
-        highway = data.get('highway', 'residential')
-        if isinstance(highway, list):
-            highway = highway[0]
-        speed_kmh = _SPEED_DEFAULTS_KMH.get(highway, 20)
-        speed_kmh = min(speed_kmh, _VEHICLE_SPEED_CAP_KMH.get(vehicle, 60))
+        # Uses _edge_speed_kmh() — same function as ETA display — to avoid
+        # mismatches between routing and reported travel time.
+        speed_kmh = _edge_speed_kmh(data, vehicle)
         speed_ms  = speed_kmh / 3.6
         data['weight_fastest'] = ((length / speed_ms) if passable
                                   else _IMPASSABLE_COST + length)
