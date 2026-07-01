@@ -38,13 +38,14 @@ try:
     from geopy.geocoders import Nominatim
     _NAV_DEPS_OK = True
     
-    # Configure osmnx fallback endpoints because the main overpass-api.de
-    # server frequently goes down or throws 429 Too Many Requests / 111 Connection refused.
-    ox.settings.overpass_endpoint = [
+    # Overpass API mirrors — we cycle through these on connection failure.
+    _OVERPASS_ENDPOINTS = [
         "https://overpass-api.de/api",
         "https://overpass.kumi.systems/api",
-        "https://maps.mail.ru/osm/tools/overpass/api"
+        "https://maps.mail.ru/osm/tools/overpass/api",
+        "https://overpass.openstreetmap.fr/api",
     ]
+    ox.settings.overpass_endpoint = _OVERPASS_ENDPOINTS[0]
 except ImportError:
     pass
 
@@ -376,14 +377,31 @@ def _haversine_km(lat1: float, lon1: float,
 def _cached_graph_from_bbox(north: float, south: float,
                             east: float, west: float,
                             network_type: str):
-    """LRU-cached osmnx download.  Caller rounds bbox to 2 dp."""
-    print(f"  📡 Downloading OSM graph: "
-          f"bbox=({north},{south},{east},{west}), type={network_type}")
-    G = ox.graph_from_bbox(
-        bbox=(west, south, east, north),   # osmnx >= 2.0: (left, bottom, right, top)
-        network_type=network_type,
-    )
-    return G
+    """LRU-cached osmnx download with Overpass endpoint cycling."""
+    endpoints = getattr(ox.settings, '_OVERPASS_ENDPOINTS', None)
+    if endpoints is None:
+        try:
+            endpoints = _OVERPASS_ENDPOINTS
+        except NameError:
+            endpoints = [ox.settings.overpass_endpoint]
+
+    last_err = None
+    for ep in endpoints:
+        ox.settings.overpass_endpoint = ep
+        try:
+            print(f"  \U0001F4E1 Downloading OSM graph via {ep}: "
+                  f"bbox=({north},{south},{east},{west}), type={network_type}")
+            G = ox.graph_from_bbox(
+                bbox=(west, south, east, north),
+                network_type=network_type,
+            )
+            return G
+        except Exception as e:
+            last_err = e
+            print(f"  \u26a0\ufe0f  Overpass endpoint {ep} failed: {type(e).__name__}")
+            continue
+    # All endpoints exhausted
+    raise last_err
 
 
 def build_road_graph(
