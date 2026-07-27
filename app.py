@@ -98,6 +98,7 @@ def _resolve_weight(env_key: str, filename: str) -> str:
     """
     Resolve model weight path.
     Priority:  env var  →  /app/<filename>  →  /app/Best path/<filename>
+    Falls back to HF Hub download with a 60s timeout to prevent startup hangs.
     """
     if env_key in os.environ:
         return os.environ[env_key]
@@ -108,11 +109,16 @@ def _resolve_weight(env_key: str, filename: str) -> str:
     if os.path.isfile(nested_path):
         return nested_path
     
-    # Auto-download from HF Models repo if not found locally
+    # Auto-download from HF Models repo if not found locally (with timeout)
     try:
         from huggingface_hub import hf_hub_download
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
         print(f"[INFO] Downloading {filename} from Hugging Face Hub (Ayushks07/updated_weights_of_roadextr)...")
-        return hf_hub_download(repo_id="Ayushks07/updated_weights_of_roadextr", filename=filename)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(hf_hub_download,
+                              repo_id="Ayushks07/updated_weights_of_roadextr",
+                              filename=filename)
+            return fut.result(timeout=60)  # 60s max — never hang forever
     except Exception as e:
         print(f"[WARNING] Could not download {filename} from HF Hub: {e}")
         return flat_path
